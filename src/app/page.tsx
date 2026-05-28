@@ -1,0 +1,1359 @@
+"use client";
+
+import {
+  Calculator,
+  ClipboardList,
+  Copy,
+  Database,
+  Download,
+  Pencil,
+  Save,
+  Trash2,
+  Hammer,
+  LayoutDashboard,
+  Printer,
+  Ruler,
+  Settings,
+  Trees,
+  Upload,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import type { Dispatch, ElementType, SetStateAction } from "react";
+import { EmptyState } from "@/components/EmptyState";
+import { Field, SelectInput, TextInput } from "@/components/Field";
+import { MetricCard } from "@/components/MetricCard";
+import { Section } from "@/components/Section";
+import {
+  calculateTrellis,
+  effectiveBoardFootCost,
+  landedCost,
+  money,
+  numberFormat,
+} from "@/lib/calculations";
+import { loadLocalData, saveLocalData } from "@/lib/local-storage";
+import {
+  jobs as seedJobs,
+  lumberBatches as seedLumberBatches,
+  products as seedProducts,
+  quotes as seedQuotes,
+} from "@/lib/seed";
+import {
+  hasSupabaseConfig,
+  loadSupabaseData,
+  deleteLumberBatch,
+  saveJob,
+  saveLumberBatch,
+  saveQuote,
+  saveShopSettings,
+  deleteJob,
+  deleteQuote,
+  updateJobStatus,
+  upsertLumberBatch,
+  upsertJob,
+  upsertProduct,
+  upsertQuote,
+} from "@/lib/store";
+import type { CalculatorInput, Job, LumberBatch, Product, Quote, ShopSettings } from "@/lib/types";
+
+type Tab = "dashboard" | "calculator" | "products" | "lumber" | "quotes" | "jobs" | "settings";
+
+const tabs: { id: Tab; label: string; icon: ElementType }[] = [
+  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { id: "calculator", label: "Calculator", icon: Calculator },
+  { id: "products", label: "Products", icon: Database },
+  { id: "lumber", label: "Lumber", icon: Trees },
+  { id: "quotes", label: "Quotes", icon: ClipboardList },
+  { id: "jobs", label: "Jobs", icon: Hammer },
+  { id: "settings", label: "Settings", icon: Settings },
+];
+
+const defaultCalculator: CalculatorInput = {
+  style: "Open Grid",
+  stockType: "3/4\"",
+  thicknessInches: 0.75,
+  slatWidthInches: 1.25,
+  widthFeet: 5,
+  heightFeet: 3,
+  verticalSlats: 6,
+  horizontalSlats: 5,
+  diagonalBraces: 1,
+  boardFootCost: 7.1,
+  wastePercentage: 18,
+  hardwareCost: 3.5,
+  laborMinutes: 58,
+  hourlyLaborRate: 38,
+  markupPercentage: 85,
+  wholesaleDiscountPercentage: 28,
+};
+
+const defaultQuote: Quote = {
+  id: "new",
+  customerName: "Customer Name",
+  phone: "(707) 555-0100",
+  email: "customer@example.com",
+  productId: "og-5x3",
+  quantity: 1,
+  customDimensions: "",
+  calculatedCost: 54,
+  quotedPrice: 92,
+  depositAmount: 40,
+  notes: "Handcrafted redwood trellis. Pickup or delivery can be arranged.",
+  validUntil: "2026-06-30",
+  status: "draft",
+};
+
+const defaultSettings: ShopSettings = {
+  defaultBoardFootCost: defaultCalculator.boardFootCost,
+  defaultWastePercentage: defaultCalculator.wastePercentage,
+  defaultHardwareCost: defaultCalculator.hardwareCost,
+  defaultHourlyLaborRate: defaultCalculator.hourlyLaborRate,
+  defaultMarkupPercentage: defaultCalculator.markupPercentage,
+  defaultWholesaleDiscountPercentage: defaultCalculator.wholesaleDiscountPercentage,
+};
+
+function numericValue(value: string) {
+  return Number(value) || 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateBackup(value: unknown): {
+  products: Product[];
+  lumberBatches: LumberBatch[];
+  quotes: Quote[];
+  jobs: Job[];
+  settings?: ShopSettings;
+} {
+  if (!isRecord(value)) {
+    throw new Error("Backup file is not a valid JSON object.");
+  }
+
+  if (
+    !Array.isArray(value.products) ||
+    !Array.isArray(value.lumberBatches) ||
+    !Array.isArray(value.quotes) ||
+    !Array.isArray(value.jobs)
+  ) {
+    throw new Error("Backup file is missing products, lumber batches, quotes, or jobs.");
+  }
+
+  return {
+    products: value.products as Product[],
+    lumberBatches: value.lumberBatches as LumberBatch[],
+    quotes: value.quotes as Quote[],
+    jobs: value.jobs as Job[],
+    settings: isRecord(value.settings) ? (value.settings as ShopSettings) : undefined,
+  };
+}
+
+export default function Home() {
+  const [activeTab, setActiveTab] = useState<Tab>("dashboard");
+  const [dataStatus, setDataStatus] = useState("Seeded local data");
+  const [products, setProducts] = useState<Product[]>(seedProducts);
+  const [calculator, setCalculator] = useState<CalculatorInput>(defaultCalculator);
+  const [lumberBatches, setLumberBatches] = useState<LumberBatch[]>(seedLumberBatches);
+  const [quotes, setQuotes] = useState<Quote[]>(seedQuotes);
+  const [jobs, setJobs] = useState<Job[]>(seedJobs);
+  const [quoteDraft, setQuoteDraft] = useState<Quote>(defaultQuote);
+  const [settings, setSettings] = useState<ShopSettings>(defaultSettings);
+  const [remoteLoaded, setRemoteLoaded] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+
+  function productById(id: string) {
+    return products.find((product) => product.id === id) ?? products[0] ?? seedProducts[0];
+  }
+
+  function exportBackup() {
+    const backup = {
+      exportedAt: new Date().toISOString(),
+      products,
+      lumberBatches,
+      quotes,
+      jobs,
+      settings,
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `redwood-trellis-manager-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importBackup(file: File) {
+    try {
+      const text = await file.text();
+      const backup = validateBackup(JSON.parse(text));
+
+      setProducts(backup.products);
+      setLumberBatches(backup.lumberBatches);
+      setQuotes(backup.quotes);
+      setJobs(backup.jobs);
+      setSettings(backup.settings ?? defaultSettings);
+      saveLocalData({
+        products: backup.products,
+        lumberBatches: backup.lumberBatches,
+        quotes: backup.quotes,
+        jobs: backup.jobs,
+        settings: backup.settings ?? defaultSettings,
+      });
+      setDataStatus("Imported backup into browser data");
+    } catch (error) {
+      setDataStatus(`Import failed: ${(error as Error).message}`);
+    }
+  }
+
+  useEffect(() => {
+    let alive = true;
+    const localData = loadLocalData();
+
+    if (localData) {
+      setProducts(localData.products.length > 0 ? localData.products : seedProducts);
+      setLumberBatches(localData.lumberBatches);
+      setQuotes(localData.quotes);
+      setJobs(localData.jobs);
+      setSettings(localData.settings ?? defaultSettings);
+      setDataStatus("Loaded saved browser data");
+    }
+
+    setHydrated(true);
+
+    if (!hasSupabaseConfig()) {
+      return;
+    }
+
+    setDataStatus("Loading Supabase data...");
+
+    loadSupabaseData()
+      .then((data) => {
+        if (!alive || !data) {
+          return;
+        }
+
+        if (data.products.length > 0) {
+          setProducts(data.products);
+        }
+        setLumberBatches(data.lumberBatches);
+        setQuotes(data.quotes);
+        setJobs(data.jobs);
+        if (data.settings) {
+          setSettings(data.settings);
+        }
+        setDataStatus("Connected to Supabase");
+        setRemoteLoaded(true);
+      })
+      .catch((error: Error) => {
+        if (alive) {
+          setDataStatus(`Supabase unavailable: ${error.message}`);
+        }
+      });
+
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || remoteLoaded) {
+      return;
+    }
+
+    saveLocalData({ products, lumberBatches, quotes, jobs, settings });
+  }, [hydrated, jobs, lumberBatches, products, quotes, remoteLoaded, settings]);
+
+  const result = useMemo(() => calculateTrellis(calculator), [calculator]);
+  const currentBoardFootCost = useMemo(() => {
+    const totalUsable = lumberBatches.reduce(
+      (sum, batch) => sum + (batch.actualUsableBoardFeet || batch.nominalBoardFeet * (batch.estimatedUsablePercentage / 100)),
+      0,
+    );
+    const totalCost = lumberBatches.reduce((sum, batch) => sum + landedCost(batch), 0);
+    return totalUsable > 0 ? totalCost / totalUsable : calculator.boardFootCost;
+  }, [calculator.boardFootCost, lumberBatches]);
+
+  const profitability = useMemo(() => {
+    return products
+      .map((product) => {
+        const calc = calculateTrellis({
+          ...defaultCalculator,
+          stockType: product.stockType,
+          thicknessInches: product.thicknessInches,
+          slatWidthInches: product.slatWidthInches,
+          widthFeet: product.widthFeet,
+          heightFeet: product.heightFeet,
+          verticalSlats: product.verticalSlatCount,
+          horizontalSlats: product.horizontalSlatCount,
+          diagonalBraces: product.diagonalBraceCount,
+          laborMinutes: product.estimatedLaborMinutes,
+          boardFootCost: currentBoardFootCost,
+          markupPercentage: 0,
+        });
+        const profit = product.retailPrice - calc.totalBuildCost;
+        const margin = product.retailPrice > 0 ? (profit / product.retailPrice) * 100 : 0;
+        return { product, profit, margin };
+      })
+      .sort((a, b) => b.margin - a.margin);
+  }, [currentBoardFootCost]);
+
+  const dashboard = {
+    activeJobs: jobs.filter((job) => job.status !== "paid" && job.status !== "delivered").length,
+    quotesPending: quotes.filter((quote) => quote.status === "draft" || quote.status === "sent").length,
+    totalQuotedValue: quotes.reduce((sum, quote) => sum + quote.quotedPrice, 0),
+    expectedProfit: quotes.reduce((sum, quote) => sum + Math.max(0, quote.quotedPrice - quote.calculatedCost), 0),
+  };
+
+  function updateCalculator<K extends keyof CalculatorInput>(key: K, value: CalculatorInput[K]) {
+    setCalculator((current) => ({ ...current, [key]: value }));
+  }
+
+  function resetCalculatorFromSettings() {
+    setCalculator((current) => ({
+      ...current,
+      boardFootCost: settings.defaultBoardFootCost,
+      wastePercentage: settings.defaultWastePercentage,
+      hardwareCost: settings.defaultHardwareCost,
+      hourlyLaborRate: settings.defaultHourlyLaborRate,
+      markupPercentage: settings.defaultMarkupPercentage,
+      wholesaleDiscountPercentage: settings.defaultWholesaleDiscountPercentage,
+    }));
+    setDataStatus("Calculator defaults applied");
+  }
+
+  async function saveSettings(nextSettings: ShopSettings, status = "Saved settings") {
+    setSettings(nextSettings);
+    saveLocalData({ products, lumberBatches, quotes, jobs, settings: nextSettings });
+
+    try {
+      const savedSettings = await saveShopSettings(nextSettings);
+      setSettings(savedSettings);
+      setDataStatus(hasSupabaseConfig() ? status : "Saved browser settings");
+    } catch (error) {
+      setDataStatus(`Settings save failed: ${(error as Error).message}`);
+    }
+  }
+
+  function saveCurrentCalculatorAsSettings() {
+    const nextSettings = {
+      defaultBoardFootCost: calculator.boardFootCost,
+      defaultWastePercentage: calculator.wastePercentage,
+      defaultHardwareCost: calculator.hardwareCost,
+      defaultHourlyLaborRate: calculator.hourlyLaborRate,
+      defaultMarkupPercentage: calculator.markupPercentage,
+      defaultWholesaleDiscountPercentage: calculator.wholesaleDiscountPercentage,
+    };
+    void saveSettings(nextSettings, "Saved calculator defaults");
+  }
+
+  function loadProduct(product: Product) {
+    setCalculator((current) => ({
+      ...current,
+      style: product.stockType === "3/4\"" ? "Open Grid" : "Custom",
+      stockType: product.stockType,
+      thicknessInches: product.thicknessInches,
+      slatWidthInches: product.slatWidthInches,
+      widthFeet: product.widthFeet,
+      heightFeet: product.heightFeet,
+      verticalSlats: product.verticalSlatCount,
+      horizontalSlats: product.horizontalSlatCount,
+      diagonalBraces: product.diagonalBraceCount,
+      laborMinutes: product.estimatedLaborMinutes,
+      boardFootCost: currentBoardFootCost,
+    }));
+    setActiveTab("calculator");
+  }
+
+  function addProduct() {
+    const widthFeet = calculator.widthFeet;
+    const heightFeet = calculator.heightFeet;
+    const stockType = calculator.stockType;
+    const nextProduct: Product = {
+      id: `custom-${Date.now()}`,
+      name: `${stockType} Custom Trellis ${widthFeet}' x ${heightFeet}'`,
+      dimensions: `${widthFeet}' x ${heightFeet}'`,
+      stockType,
+      thicknessInches: calculator.thicknessInches,
+      slatWidthInches: calculator.slatWidthInches,
+      widthFeet,
+      heightFeet,
+      verticalSlatCount: calculator.verticalSlats,
+      horizontalSlatCount: calculator.horizontalSlats,
+      diagonalBraceCount: calculator.diagonalBraces,
+      estimatedLaborMinutes: calculator.laborMinutes,
+      retailPrice: Math.round(result.retailPrice),
+      wholesalePrice: Math.round(result.wholesalePrice),
+      active: true,
+    };
+
+    setProducts((current) => [nextProduct, ...current]);
+    setActiveTab("products");
+  }
+
+  async function addLumberBatch() {
+    const draftBatch = {
+      id: `batch-${Date.now()}`,
+      supplierName: "New supplier",
+      woodType: "Rough redwood",
+      unitCost: 5,
+      nominalBoardFeet: 100,
+      fuelTravelCost: 25,
+      estimatedUsablePercentage: 75,
+      actualUsableBoardFeet: 75,
+      notes: "Add notes here.",
+    };
+
+    try {
+      const savedBatch = await saveLumberBatch(draftBatch);
+      setLumberBatches((current) => [savedBatch, ...current]);
+    } catch (error) {
+      setDataStatus(`Save failed: ${(error as Error).message}`);
+      setLumberBatches((current) => [draftBatch, ...current]);
+    }
+  }
+
+  async function saveEditedBatch(batch: LumberBatch, index: number) {
+    try {
+      const savedBatch = await upsertLumberBatch(batch);
+      setLumberBatches((current) =>
+        current.map((item, itemIndex) => (itemIndex === index ? savedBatch : item)),
+      );
+      setDataStatus(hasSupabaseConfig() ? "Saved lumber batch" : "Seeded local data");
+    } catch (error) {
+      setDataStatus(`Save failed: ${(error as Error).message}`);
+    }
+  }
+
+  async function saveExistingProduct(product: Product, index: number) {
+    try {
+      const savedProduct = await upsertProduct(product);
+      setProducts((current) =>
+        current.map((item, itemIndex) => (itemIndex === index ? savedProduct : item)),
+      );
+      setDataStatus(hasSupabaseConfig() ? "Saved product" : "Saved browser data");
+    } catch (error) {
+      setDataStatus(`Save failed: ${(error as Error).message}`);
+    }
+  }
+
+  async function removeBatch(batch: LumberBatch) {
+    if (!window.confirm(`Delete lumber batch from ${batch.supplierName}?`)) {
+      return;
+    }
+
+    try {
+      await deleteLumberBatch(batch.id);
+      setLumberBatches((current) => current.filter((item) => item.id !== batch.id));
+      setDataStatus(hasSupabaseConfig() ? "Deleted lumber batch" : "Saved browser data");
+    } catch (error) {
+      setDataStatus(`Delete failed: ${(error as Error).message}`);
+    }
+  }
+
+  async function addQuote() {
+    const product = productById(quoteDraft.productId);
+    const nextQuote = {
+      ...quoteDraft,
+      id: `quote-${Date.now()}`,
+      calculatedCost: Math.max(quoteDraft.calculatedCost, product.wholesalePrice * quoteDraft.quantity),
+      quotedPrice: quoteDraft.quotedPrice || product.retailPrice * quoteDraft.quantity,
+    };
+
+    try {
+      const savedQuote = await saveQuote(nextQuote);
+      setQuotes((current) => [savedQuote, ...current]);
+    } catch (error) {
+      setDataStatus(`Save failed: ${(error as Error).message}`);
+      setQuotes((current) => [nextQuote, ...current]);
+    }
+  }
+
+  async function addJobFromQuote(quote: Quote) {
+    const nextJob: Job = {
+      id: `job-${Date.now()}`,
+      customerName: quote.customerName,
+      productId: quote.productId,
+      quoteId: quote.id,
+      status: quote.status === "accepted" ? "deposit paid" : "quoted",
+      dueDate: quote.validUntil,
+      balanceOwed: Math.max(0, quote.quotedPrice - quote.depositAmount),
+      notes: quote.notes,
+    };
+
+    try {
+      const savedJob = await saveJob(nextJob);
+      setJobs((current) => [savedJob, ...current]);
+    } catch (error) {
+      setDataStatus(`Save failed: ${(error as Error).message}`);
+      setJobs((current) => [nextJob, ...current]);
+    }
+    setActiveTab("jobs");
+  }
+
+  async function saveExistingQuote(quote: Quote, index: number) {
+    try {
+      const savedQuote = await upsertQuote(quote);
+      setQuotes((current) =>
+        current.map((item, itemIndex) => (itemIndex === index ? savedQuote : item)),
+      );
+      setDataStatus(hasSupabaseConfig() ? "Saved quote" : "Saved browser data");
+    } catch (error) {
+      setDataStatus(`Save failed: ${(error as Error).message}`);
+    }
+  }
+
+  async function removeQuote(quote: Quote) {
+    if (!window.confirm(`Delete quote for ${quote.customerName}?`)) {
+      return;
+    }
+
+    try {
+      await deleteQuote(quote.id);
+      setQuotes((current) => current.filter((item) => item.id !== quote.id));
+      setDataStatus(hasSupabaseConfig() ? "Deleted quote" : "Saved browser data");
+    } catch (error) {
+      setDataStatus(`Delete failed: ${(error as Error).message}`);
+    }
+  }
+
+  async function saveExistingJob(job: Job, index: number) {
+    try {
+      const savedJob = await upsertJob(job);
+      setJobs((current) =>
+        current.map((item, itemIndex) => (itemIndex === index ? savedJob : item)),
+      );
+      setDataStatus(hasSupabaseConfig() ? "Saved job" : "Saved browser data");
+    } catch (error) {
+      setDataStatus(`Save failed: ${(error as Error).message}`);
+    }
+  }
+
+  async function removeJob(job: Job) {
+    if (!window.confirm(`Delete job for ${job.customerName}?`)) {
+      return;
+    }
+
+    try {
+      await deleteJob(job.id);
+      setJobs((current) => current.filter((item) => item.id !== job.id));
+      setDataStatus(hasSupabaseConfig() ? "Deleted job" : "Saved browser data");
+    } catch (error) {
+      setDataStatus(`Delete failed: ${(error as Error).message}`);
+    }
+  }
+
+  const quoteProduct = productById(quoteDraft.productId);
+  const textMessageQuote = `${quoteDraft.customerName}, your quote for ${quoteDraft.quantity} ${quoteProduct.name}${quoteDraft.customDimensions ? ` (${quoteDraft.customDimensions})` : ""} is ${money(quoteDraft.quotedPrice)}. Deposit: ${money(quoteDraft.depositAmount)}. Valid until ${quoteDraft.validUntil}. ${quoteDraft.notes}`;
+
+  return (
+    <main className="min-h-screen">
+      <header className="border-b border-redwood/20 bg-bark text-linen">
+        <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-6 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <div className="flex items-center gap-3">
+              <Ruler className="h-9 w-9 text-clay" aria-hidden="true" />
+              <h1 className="text-4xl font-bold">Redwood Trellis Manager</h1>
+            </div>
+            <p className="mt-2 text-lg text-shop">Internal shop tool for pricing, quotes, lumber costs, and jobs.</p>
+          </div>
+          <div className="rounded-lg border border-shop/20 bg-white/10 px-4 py-3 text-lg">
+            <div>Current board-foot cost: <strong>{money(currentBoardFootCost)}</strong></div>
+            <div className="text-sm text-shop">{dataStatus}</div>
+          </div>
+          <div className="no-print flex flex-wrap gap-2">
+            <button type="button" onClick={exportBackup} className="flex h-11 items-center gap-2 rounded-md bg-clay px-3 text-base font-bold text-white">
+              <Download className="h-5 w-5" />
+              Export
+            </button>
+            <label className="flex h-11 cursor-pointer items-center gap-2 rounded-md bg-moss px-3 text-base font-bold text-white">
+              <Upload className="h-5 w-5" />
+              Import
+              <input
+                type="file"
+                accept="application/json"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) {
+                    void importBackup(file);
+                  }
+                  event.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+        </div>
+      </header>
+
+      <div className="mx-auto grid max-w-7xl gap-5 px-5 py-5 lg:grid-cols-[220px_1fr]">
+        <nav className="no-print grid h-fit grid-cols-2 gap-2 rounded-lg border border-shop bg-white p-2 shadow-soft lg:sticky lg:top-5 lg:grid-cols-1">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex min-h-12 items-center gap-3 rounded-md px-3 text-left text-lg font-bold ${
+                  activeTab === tab.id
+                    ? "bg-redwood text-white"
+                    : "bg-linen text-bark hover:bg-shop"
+                }`}
+              >
+                <Icon className="h-5 w-5" aria-hidden="true" />
+                {tab.label}
+              </button>
+            );
+          })}
+        </nav>
+
+        <div className="grid gap-5">
+          {activeTab === "dashboard" ? (
+            <Dashboard
+              dashboard={dashboard}
+              profitability={profitability}
+              currentBoardFootCost={currentBoardFootCost}
+            />
+          ) : null}
+
+          {activeTab === "calculator" ? (
+            <Section title="Trellis Cost Calculator" description="Change the inputs and the shop price updates immediately.">
+              <div className="mb-4 flex flex-wrap gap-2">
+                <button type="button" onClick={resetCalculatorFromSettings} className="h-11 rounded-md bg-bark px-4 text-base font-bold text-white">
+                  Apply shop defaults
+                </button>
+                <button type="button" onClick={saveCurrentCalculatorAsSettings} className="h-11 rounded-md bg-moss px-4 text-base font-bold text-white">
+                  Save current as defaults
+                </button>
+              </div>
+              <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <Field label="Trellis style">
+                    <SelectInput value={calculator.style} onChange={(event) => updateCalculator("style", event.target.value as CalculatorInput["style"])}>
+                      <option>Open Grid</option>
+                      <option>Fan</option>
+                      <option>Custom</option>
+                    </SelectInput>
+                  </Field>
+                  <Field label="Stock type">
+                    <SelectInput
+                      value={calculator.stockType}
+                      onChange={(event) => {
+                        const stockType = event.target.value as CalculatorInput["stockType"];
+                        updateCalculator("stockType", stockType);
+                        updateCalculator("thicknessInches", stockType === "1 1/8\"" ? 1.125 : 0.75);
+                      }}
+                    >
+                      <option>3/4&quot;</option>
+                      <option>1 1/8&quot;</option>
+                    </SelectInput>
+                  </Field>
+                  {[
+                    ["Width feet", "widthFeet"],
+                    ["Height feet", "heightFeet"],
+                    ["Vertical slats", "verticalSlats"],
+                    ["Horizontal slats", "horizontalSlats"],
+                    ["Diagonal braces", "diagonalBraces"],
+                    ["Board-foot cost", "boardFootCost"],
+                    ["Waste percentage", "wastePercentage"],
+                    ["Hardware cost", "hardwareCost"],
+                    ["Labor minutes", "laborMinutes"],
+                    ["Hourly labor rate", "hourlyLaborRate"],
+                    ["Markup percentage", "markupPercentage"],
+                    ["Wholesale discount", "wholesaleDiscountPercentage"],
+                  ].map(([label, key]) => (
+                    <Field key={key} label={label}>
+                      <TextInput
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={calculator[key as keyof CalculatorInput] as number}
+                        onChange={(event) => updateCalculator(key as keyof CalculatorInput, numericValue(event.target.value) as never)}
+                      />
+                    </Field>
+                  ))}
+                </div>
+                <div className="grid gap-3">
+                  <MetricCard label="Retail price" value={money(result.retailPrice)} tone="good" />
+                  <MetricCard label="Total build cost" value={money(result.totalBuildCost)} />
+                  <MetricCard label="Profit" value={money(result.profit)} tone="good" help={`${numberFormat(result.marginPercentage, 1)}% margin`} />
+                  <div className="grid grid-cols-2 gap-3">
+                    <MetricCard label="Linear feet" value={numberFormat(result.totalLinearFeet)} />
+                    <MetricCard label="Board feet" value={numberFormat(result.wasteAdjustedBoardFeet)} help="Waste adjusted" />
+                    <MetricCard label="Material" value={money(result.materialCost)} />
+                    <MetricCard label="Labor" value={money(result.laborCost)} />
+                    <MetricCard label="Hardware" value={money(result.hardwareCost)} />
+                    <MetricCard label="Wholesale" value={money(result.wholesalePrice)} />
+                  </div>
+                </div>
+              </div>
+            </Section>
+          ) : null}
+
+          {activeTab === "products" ? (
+            <Section title="Product Database" description="Seeded standard trellises with active status, dimensions, labor, and retail/wholesale pricing.">
+              <button type="button" onClick={addProduct} className="mb-4 h-12 rounded-md bg-redwood px-4 text-lg font-bold text-white hover:bg-redwoodDark">
+                Add product from calculator
+              </button>
+              <ProductTable
+                products={products}
+                onChange={(product, index) => {
+                  setProducts((current) =>
+                    current.map((item, itemIndex) => (itemIndex === index ? product : item)),
+                  );
+                }}
+                onSave={saveExistingProduct}
+                onLoad={loadProduct}
+                profitability={profitability}
+              />
+            </Section>
+          ) : null}
+
+          {activeTab === "lumber" ? (
+            <Section title="Lumber Batch / Sourcing Tracker" description="Track rough redwood, travel, waste, and true usable board-foot cost.">
+              <button type="button" onClick={addLumberBatch} className="mb-4 h-12 rounded-md bg-redwood px-4 text-lg font-bold text-white hover:bg-redwoodDark">
+                Add lumber batch
+              </button>
+              {lumberBatches.length === 0 ? (
+                <EmptyState title="No lumber batches yet" message="Add a purchase to calculate landed and usable board-foot cost." />
+              ) : null}
+              <div className="grid gap-4">
+                {lumberBatches.map((batch, index) => (
+                  <div key={batch.id} className="rounded-lg border border-shop bg-linen p-4">
+                    <div className="grid gap-3 md:grid-cols-4">
+                      <Field label="Supplier">
+                        <TextInput value={batch.supplierName} onChange={(event) => updateBatch(index, "supplierName", event.target.value, setLumberBatches)} />
+                      </Field>
+                      <Field label="Wood type">
+                        <TextInput value={batch.woodType} onChange={(event) => updateBatch(index, "woodType", event.target.value, setLumberBatches)} />
+                      </Field>
+                      <Field label="Unit cost">
+                        <TextInput type="number" value={batch.unitCost} onChange={(event) => updateBatch(index, "unitCost", numericValue(event.target.value), setLumberBatches)} />
+                      </Field>
+                      <Field label="Nominal board feet">
+                        <TextInput type="number" value={batch.nominalBoardFeet} onChange={(event) => updateBatch(index, "nominalBoardFeet", numericValue(event.target.value), setLumberBatches)} />
+                      </Field>
+                      <Field label="Fuel/travel">
+                        <TextInput type="number" value={batch.fuelTravelCost} onChange={(event) => updateBatch(index, "fuelTravelCost", numericValue(event.target.value), setLumberBatches)} />
+                      </Field>
+                      <Field label="Usable percentage">
+                        <TextInput type="number" value={batch.estimatedUsablePercentage} onChange={(event) => updateBatch(index, "estimatedUsablePercentage", numericValue(event.target.value), setLumberBatches)} />
+                      </Field>
+                      <Field label="Actual usable board feet">
+                        <TextInput type="number" value={batch.actualUsableBoardFeet} onChange={(event) => updateBatch(index, "actualUsableBoardFeet", numericValue(event.target.value), setLumberBatches)} />
+                      </Field>
+                      <div className="grid content-end gap-1 rounded-md bg-white p-3">
+                        <div className="text-sm font-bold text-barkSoft">Effective cost</div>
+                        <div className="text-2xl font-bold text-bark">{money(effectiveBoardFootCost(batch))}</div>
+                        <div className="text-sm text-barkSoft">Landed: {money(landedCost(batch))}</div>
+                      </div>
+                    </div>
+                    <textarea
+                      value={batch.notes}
+                      onChange={(event) => updateBatch(index, "notes", event.target.value, setLumberBatches)}
+                      className="mt-3 min-h-20 w-full rounded-md border border-shop bg-white p-3 text-lg text-bark outline-none focus:border-redwood"
+                    />
+                    <div className="mt-3 flex gap-2">
+                      <button type="button" onClick={() => saveEditedBatch(batch, index)} className="h-11 rounded-md bg-bark px-4 text-base font-bold text-white">
+                        Save batch
+                      </button>
+                      <button type="button" onClick={() => removeBatch(batch)} className="h-11 rounded-md bg-redwood px-4 text-base font-bold text-white">
+                        Delete batch
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Section>
+          ) : null}
+
+          {activeTab === "quotes" ? (
+            <Section title="Quote Generator" description="Create a quote, print it, copy a text-message version, and turn accepted quotes into jobs.">
+              <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+                <QuoteEditor quote={quoteDraft} setQuote={setQuoteDraft} addQuote={addQuote} products={products} productById={productById} />
+                <div className="grid gap-4">
+                  <PrintableQuote quote={quoteDraft} product={quoteProduct} textMessageQuote={textMessageQuote} />
+                  <QuoteList
+                    quotes={quotes}
+                    products={products}
+                    onCreateJob={addJobFromQuote}
+                    onChange={(quote, index) => {
+                      setQuotes((current) =>
+                        current.map((item, itemIndex) => (itemIndex === index ? quote : item)),
+                      );
+                    }}
+                    onDelete={removeQuote}
+                    onSave={saveExistingQuote}
+                    productById={productById}
+                  />
+                </div>
+              </div>
+            </Section>
+          ) : null}
+
+          {activeTab === "jobs" ? (
+            <Section title="Job Tracker" description="Track shop work from new quote through deposit, build, delivery, and final payment.">
+              {jobs.length === 0 ? (
+                <EmptyState title="No jobs yet" message="Accepted quotes can be turned into jobs from the Quotes tab." />
+              ) : null}
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[850px] border-separate border-spacing-y-2 text-left">
+                  <thead className="text-sm uppercase text-barkSoft">
+                    <tr>
+                      <th className="px-3">Customer</th>
+                      <th className="px-3">Product</th>
+                      <th className="px-3">Status</th>
+                      <th className="px-3">Due</th>
+                      <th className="px-3">Balance</th>
+                      <th className="px-3">Notes</th>
+                      <th className="px-3">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {jobs.map((job, index) => (
+                      <tr key={job.id} className="bg-linen text-lg">
+                        <td className="rounded-l-md px-3 py-3 font-bold">
+                          <TextInput value={job.customerName} onChange={(event) => updateJob(index, "customerName", event.target.value, setJobs)} />
+                        </td>
+                        <td className="px-3 py-3">
+                          <SelectInput value={job.productId} onChange={(event) => updateJob(index, "productId", event.target.value, setJobs)}>
+                            {products.map((product) => <option value={product.id} key={product.id}>{product.dimensions} {product.stockType}</option>)}
+                          </SelectInput>
+                        </td>
+                        <td className="px-3 py-3">
+                          <SelectInput value={job.status} onChange={(event) => {
+                            const status = event.target.value as Job["status"];
+                            updateJob(index, "status", status, setJobs);
+                            updateJobStatus(job.id, status).catch((error: Error) => setDataStatus(`Save failed: ${error.message}`));
+                          }}>
+                            {["new", "quoted", "deposit paid", "building", "ready", "delivered", "paid"].map((status) => <option key={status}>{status}</option>)}
+                          </SelectInput>
+                        </td>
+                        <td className="px-3 py-3">
+                          <TextInput type="date" value={job.dueDate} onChange={(event) => updateJob(index, "dueDate", event.target.value, setJobs)} />
+                        </td>
+                        <td className="px-3 py-3 font-bold">
+                          <TextInput type="number" value={job.balanceOwed} onChange={(event) => updateJob(index, "balanceOwed", numericValue(event.target.value), setJobs)} />
+                        </td>
+                        <td className="px-3 py-3">
+                          <TextInput value={job.notes} onChange={(event) => updateJob(index, "notes", event.target.value, setJobs)} />
+                        </td>
+                        <td className="rounded-r-md px-3 py-3">
+                          <div className="flex gap-2">
+                            <button type="button" onClick={() => saveExistingJob(job, index)} className="rounded-md bg-moss p-3 text-white" aria-label="Save job">
+                              <Save className="h-5 w-5" />
+                            </button>
+                            <button type="button" onClick={() => removeJob(job)} className="rounded-md bg-redwood p-3 text-white" aria-label="Delete job">
+                              <Trash2 className="h-5 w-5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Section>
+          ) : null}
+
+          {activeTab === "settings" ? (
+            <Section title="Shop Settings" description="Defaults used by the calculator for normal shop pricing.">
+              <SettingsPanel
+                settings={settings}
+                onChange={(nextSettings) => {
+                  setSettings(nextSettings);
+                  saveLocalData({ products, lumberBatches, quotes, jobs, settings: nextSettings });
+                  setDataStatus("Updated browser settings");
+                }}
+                onSave={() => void saveSettings(settings)}
+                onApply={resetCalculatorFromSettings}
+              />
+            </Section>
+          ) : null}
+        </div>
+      </div>
+    </main>
+  );
+}
+
+function Dashboard({
+  dashboard,
+  profitability,
+  currentBoardFootCost,
+}: {
+  dashboard: { activeJobs: number; quotesPending: number; totalQuotedValue: number; expectedProfit: number };
+  profitability: { product: Product; profit: number; margin: number }[];
+  currentBoardFootCost: number;
+}) {
+  return (
+    <div className="grid gap-5">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+        <MetricCard label="Active jobs" value={String(dashboard.activeJobs)} tone="warn" />
+        <MetricCard label="Quotes pending" value={String(dashboard.quotesPending)} />
+        <MetricCard label="Quoted value" value={money(dashboard.totalQuotedValue)} tone="good" />
+        <MetricCard label="Expected profit" value={money(dashboard.expectedProfit)} tone="good" />
+        <MetricCard label="Board-foot cost" value={money(currentBoardFootCost)} />
+      </div>
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Section title="Most Profitable Sizes">
+          <ProfitList items={profitability.slice(0, 5)} />
+        </Section>
+        <Section title="Lowest Margin Sizes">
+          <ProfitList items={[...profitability].reverse().slice(0, 5)} />
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+function ProfitList({ items }: { items: { product: Product; profit: number; margin: number }[] }) {
+  return (
+    <div className="grid gap-2">
+      {items.map(({ product, profit, margin }) => (
+        <div key={product.id} className="grid grid-cols-[1fr_auto_auto] gap-3 rounded-md bg-linen p-3 text-lg">
+          <div className="font-bold">{product.name}</div>
+          <div>{money(profit)}</div>
+          <div className="font-bold">{numberFormat(margin, 1)}%</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ProductTable({
+  products,
+  onChange,
+  onSave,
+  onLoad,
+  profitability,
+}: {
+  products: Product[];
+  onChange: (product: Product, index: number) => void;
+  onSave: (product: Product, index: number) => void;
+  onLoad: (product: Product) => void;
+  profitability: { product: Product; profit: number; margin: number }[];
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[1180px] border-separate border-spacing-y-2 text-left">
+        <thead className="text-sm uppercase text-barkSoft">
+          <tr>
+            <th className="px-3">Product</th>
+            <th className="px-3">Size</th>
+            <th className="px-3">Stock</th>
+            <th className="px-3">Slats</th>
+            <th className="px-3">Braces</th>
+            <th className="px-3">Labor</th>
+            <th className="px-3">Wholesale</th>
+            <th className="px-3">Retail</th>
+            <th className="px-3">Margin</th>
+            <th className="px-3">Active</th>
+            <th className="px-3">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {products.map((product, index) => {
+            const profit = profitability.find((item) => item.product.id === product.id);
+            const update = <K extends keyof Product>(key: K, value: Product[K]) => {
+              onChange({ ...product, [key]: value }, index);
+            };
+
+            return (
+              <tr key={product.id} className="bg-linen text-lg">
+                <td className="rounded-l-md px-3 py-3 font-bold">
+                  <TextInput value={product.name} onChange={(event) => update("name", event.target.value)} />
+                </td>
+                <td className="px-3 py-3">
+                  <div className="grid grid-cols-3 gap-2">
+                    <TextInput value={product.dimensions} onChange={(event) => update("dimensions", event.target.value)} aria-label="Dimensions label" />
+                    <TextInput type="number" value={product.widthFeet} onChange={(event) => update("widthFeet", numericValue(event.target.value))} aria-label="Width feet" />
+                    <TextInput type="number" value={product.heightFeet} onChange={(event) => update("heightFeet", numericValue(event.target.value))} aria-label="Height feet" />
+                  </div>
+                </td>
+                <td className="px-3 py-3">
+                  <SelectInput value={product.stockType} onChange={(event) => {
+                    const stockType = event.target.value as Product["stockType"];
+                    onChange({
+                      ...product,
+                      stockType,
+                      thicknessInches: stockType === "1 1/8\"" ? 1.125 : 0.75,
+                    }, index);
+                  }}>
+                    <option>3/4&quot;</option>
+                    <option>1 1/8&quot;</option>
+                  </SelectInput>
+                </td>
+                <td className="px-3 py-3">
+                  <div className="grid grid-cols-2 gap-2">
+                    <TextInput type="number" value={product.verticalSlatCount} onChange={(event) => update("verticalSlatCount", numericValue(event.target.value))} aria-label="Vertical slats" />
+                    <TextInput type="number" value={product.horizontalSlatCount} onChange={(event) => update("horizontalSlatCount", numericValue(event.target.value))} aria-label="Horizontal slats" />
+                  </div>
+                </td>
+                <td className="px-3 py-3">
+                  <TextInput type="number" value={product.diagonalBraceCount} onChange={(event) => update("diagonalBraceCount", numericValue(event.target.value))} />
+                </td>
+                <td className="px-3 py-3">
+                  <TextInput type="number" value={product.estimatedLaborMinutes} onChange={(event) => update("estimatedLaborMinutes", numericValue(event.target.value))} />
+                </td>
+                <td className="px-3 py-3">
+                  <TextInput type="number" value={product.wholesalePrice} onChange={(event) => update("wholesalePrice", numericValue(event.target.value))} />
+                </td>
+                <td className="px-3 py-3 font-bold">
+                  <TextInput type="number" value={product.retailPrice} onChange={(event) => update("retailPrice", numericValue(event.target.value))} />
+                </td>
+                <td className="px-3 py-3">{profit ? `${numberFormat(profit.margin, 1)}%` : "-"}</td>
+                <td className="px-3 py-3">
+                  <SelectInput value={product.active ? "active" : "inactive"} onChange={(event) => update("active", event.target.value === "active")}>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                  </SelectInput>
+                </td>
+                <td className="rounded-r-md px-3 py-3">
+                  <div className="flex gap-2">
+                    <button type="button" onClick={() => onSave(product, index)} className="rounded-md bg-moss p-3 text-white" aria-label="Save product">
+                      <Save className="h-5 w-5" />
+                    </button>
+                    <button type="button" onClick={() => onLoad(product)} className="rounded-md bg-bark px-3 py-2 text-base font-bold text-white">
+                      Calculate
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function QuoteEditor({
+  quote,
+  setQuote,
+  addQuote,
+  products,
+  productById,
+}: {
+  quote: Quote;
+  setQuote: Dispatch<SetStateAction<Quote>>;
+  addQuote: () => void;
+  products: Product[];
+  productById: (id: string) => Product;
+}) {
+  const product = productById(quote.productId);
+
+  function update<K extends keyof Quote>(key: K, value: Quote[K]) {
+    setQuote((current) => ({ ...current, [key]: value }));
+  }
+
+  return (
+    <div className="grid gap-3 rounded-lg bg-linen p-4">
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field label="Customer name"><TextInput value={quote.customerName} onChange={(event) => update("customerName", event.target.value)} /></Field>
+        <Field label="Phone"><TextInput value={quote.phone} onChange={(event) => update("phone", event.target.value)} /></Field>
+        <Field label="Email"><TextInput value={quote.email} onChange={(event) => update("email", event.target.value)} /></Field>
+        <Field label="Product">
+          <SelectInput
+            value={quote.productId}
+            onChange={(event) => {
+              const nextProduct = productById(event.target.value);
+              setQuote((current) => ({
+                ...current,
+                productId: nextProduct.id,
+                calculatedCost: nextProduct.wholesalePrice * current.quantity,
+                quotedPrice: nextProduct.retailPrice * current.quantity,
+              }));
+            }}
+          >
+            {products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
+          </SelectInput>
+        </Field>
+        <Field label="Quantity"><TextInput type="number" value={quote.quantity} onChange={(event) => {
+          const quantity = numericValue(event.target.value);
+          setQuote((current) => ({
+            ...current,
+            quantity,
+            calculatedCost: product.wholesalePrice * quantity,
+            quotedPrice: product.retailPrice * quantity,
+          }));
+        }} /></Field>
+        <Field label="Custom dimensions"><TextInput value={quote.customDimensions} onChange={(event) => update("customDimensions", event.target.value)} /></Field>
+        <Field label="Calculated cost"><TextInput type="number" value={quote.calculatedCost} onChange={(event) => update("calculatedCost", numericValue(event.target.value))} /></Field>
+        <Field label="Quoted price"><TextInput type="number" value={quote.quotedPrice} onChange={(event) => update("quotedPrice", numericValue(event.target.value))} /></Field>
+        <Field label="Deposit"><TextInput type="number" value={quote.depositAmount} onChange={(event) => update("depositAmount", numericValue(event.target.value))} /></Field>
+        <Field label="Valid until"><TextInput type="date" value={quote.validUntil} onChange={(event) => update("validUntil", event.target.value)} /></Field>
+        <Field label="Status">
+          <SelectInput value={quote.status} onChange={(event) => update("status", event.target.value as Quote["status"])}>
+            <option>draft</option>
+            <option>sent</option>
+            <option>accepted</option>
+            <option>declined</option>
+          </SelectInput>
+        </Field>
+      </div>
+      <textarea value={quote.notes} onChange={(event) => update("notes", event.target.value)} className="min-h-24 rounded-md border border-shop bg-white p-3 text-lg text-bark outline-none focus:border-redwood" />
+      <button type="button" onClick={addQuote} className="h-12 rounded-md bg-redwood px-4 text-lg font-bold text-white hover:bg-redwoodDark">
+        Save quote
+      </button>
+    </div>
+  );
+}
+
+function PrintableQuote({
+  quote,
+  product,
+  textMessageQuote,
+}: {
+  quote: Quote;
+  product: Product;
+  textMessageQuote: string;
+}) {
+  return (
+    <div className="rounded-lg border border-shop bg-white p-5">
+      <div className="mb-3 flex flex-wrap gap-2 no-print">
+        <button type="button" onClick={() => window.print()} className="flex h-11 items-center gap-2 rounded-md bg-bark px-3 font-bold text-white">
+          <Printer className="h-5 w-5" /> Print
+        </button>
+        <button type="button" onClick={() => navigator.clipboard.writeText(textMessageQuote)} className="flex h-11 items-center gap-2 rounded-md bg-moss px-3 font-bold text-white">
+          <Copy className="h-5 w-5" /> Copy text quote
+        </button>
+      </div>
+      <div className="print-quote rounded-md border border-shop p-5">
+        <h3 className="text-3xl font-bold text-bark">Redwood Trellis Quote</h3>
+        <p className="mt-1 text-lg text-barkSoft">Prepared for {quote.customerName}</p>
+        <div className="mt-5 grid gap-2 text-lg">
+          <div><strong>Product:</strong> {product.name}</div>
+          <div><strong>Quantity:</strong> {quote.quantity}</div>
+          {quote.customDimensions ? <div><strong>Custom dimensions:</strong> {quote.customDimensions}</div> : null}
+          <div><strong>Quoted price:</strong> {money(quote.quotedPrice)}</div>
+          <div><strong>Deposit:</strong> {money(quote.depositAmount)}</div>
+          <div><strong>Balance:</strong> {money(Math.max(0, quote.quotedPrice - quote.depositAmount))}</div>
+          <div><strong>Valid until:</strong> {quote.validUntil}</div>
+          <div><strong>Notes:</strong> {quote.notes}</div>
+        </div>
+      </div>
+      <div className="mt-3 rounded-md bg-linen p-3 text-base text-bark no-print">{textMessageQuote}</div>
+    </div>
+  );
+}
+
+function QuoteList({
+  quotes,
+  products,
+  onCreateJob,
+  onChange,
+  onDelete,
+  onSave,
+  productById,
+}: {
+  quotes: Quote[];
+  products: Product[];
+  onCreateJob: (quote: Quote) => void;
+  onChange: (quote: Quote, index: number) => void;
+  onDelete: (quote: Quote) => void;
+  onSave: (quote: Quote, index: number) => void;
+  productById: (id: string) => Product;
+}) {
+  return (
+    <div className="grid gap-2">
+      {quotes.length === 0 ? (
+        <EmptyState title="No saved quotes yet" message="Save a quote from the form to track customer pricing and follow-up." />
+      ) : null}
+      {quotes.map((quote, index) => (
+        <EditableQuote
+          key={quote.id}
+          quote={quote}
+          products={products}
+          productById={productById}
+          onChange={(nextQuote) => onChange(nextQuote, index)}
+          onCreateJob={onCreateJob}
+          onDelete={onDelete}
+          onSave={(nextQuote) => onSave(nextQuote, index)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function EditableQuote({
+  quote,
+  products,
+  productById,
+  onChange,
+  onCreateJob,
+  onDelete,
+  onSave,
+}: {
+  quote: Quote;
+  products: Product[];
+  productById: (id: string) => Product;
+  onChange: (quote: Quote) => void;
+  onCreateJob: (quote: Quote) => void;
+  onDelete: (quote: Quote) => void;
+  onSave: (quote: Quote) => void;
+}) {
+  const [draft, setDraft] = useState(quote);
+
+  function update<K extends keyof Quote>(key: K, value: Quote[K]) {
+    const nextQuote = { ...draft, [key]: value };
+    setDraft(nextQuote);
+    onChange(nextQuote);
+  }
+
+  function updateProduct(productId: string) {
+    const product = productById(productId);
+    const nextQuote = {
+      ...draft,
+      productId,
+      calculatedCost: product.wholesalePrice * draft.quantity,
+      quotedPrice: product.retailPrice * draft.quantity,
+    };
+    setDraft(nextQuote);
+    onChange(nextQuote);
+  }
+
+  return (
+    <div className="rounded-md bg-linen p-3 text-lg">
+      <div className="grid gap-3 lg:grid-cols-[1.2fr_1.4fr_0.7fr_0.8fr_0.8fr_0.8fr]">
+        <Field label="Customer">
+          <TextInput value={draft.customerName} onChange={(event) => update("customerName", event.target.value)} />
+        </Field>
+        <Field label="Product">
+          <SelectInput value={draft.productId} onChange={(event) => updateProduct(event.target.value)}>
+            {products.map((product) => <option value={product.id} key={product.id}>{product.name}</option>)}
+          </SelectInput>
+        </Field>
+        <Field label="Qty">
+          <TextInput
+            type="number"
+            value={draft.quantity}
+            onChange={(event) => {
+              const quantity = numericValue(event.target.value);
+              const product = productById(draft.productId);
+              const nextQuote = {
+                ...draft,
+                quantity,
+                calculatedCost: product.wholesalePrice * quantity,
+                quotedPrice: product.retailPrice * quantity,
+              };
+              setDraft(nextQuote);
+              onChange(nextQuote);
+            }}
+          />
+        </Field>
+        <Field label="Price">
+          <TextInput type="number" value={draft.quotedPrice} onChange={(event) => update("quotedPrice", numericValue(event.target.value))} />
+        </Field>
+        <Field label="Deposit">
+          <TextInput type="number" value={draft.depositAmount} onChange={(event) => update("depositAmount", numericValue(event.target.value))} />
+        </Field>
+        <Field label="Status">
+          <SelectInput value={draft.status} onChange={(event) => update("status", event.target.value as Quote["status"])}>
+            <option>draft</option>
+            <option>sent</option>
+            <option>accepted</option>
+            <option>declined</option>
+          </SelectInput>
+        </Field>
+      </div>
+      <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_1fr_1fr_1.5fr_auto] lg:items-end">
+        <Field label="Phone">
+          <TextInput value={draft.phone} onChange={(event) => update("phone", event.target.value)} />
+        </Field>
+        <Field label="Email">
+          <TextInput value={draft.email} onChange={(event) => update("email", event.target.value)} />
+        </Field>
+        <Field label="Valid until">
+          <TextInput type="date" value={draft.validUntil} onChange={(event) => update("validUntil", event.target.value)} />
+        </Field>
+        <Field label="Notes">
+          <TextInput value={draft.notes} onChange={(event) => update("notes", event.target.value)} />
+        </Field>
+        <div className="flex gap-2">
+          <button type="button" onClick={() => onSave(draft)} className="rounded-md bg-moss p-3 text-white" aria-label="Save quote">
+            <Save className="h-5 w-5" />
+          </button>
+          <button type="button" onClick={() => onCreateJob(draft)} className="rounded-md bg-bark p-3 text-white" aria-label="Make job">
+            <Pencil className="h-5 w-5" />
+          </button>
+          <button type="button" onClick={() => onDelete(draft)} className="rounded-md bg-redwood p-3 text-white" aria-label="Delete quote">
+            <Trash2 className="h-5 w-5" />
+          </button>
+        </div>
+      </div>
+      <div className="mt-2 text-base text-barkSoft">Balance after deposit: {money(Math.max(0, draft.quotedPrice - draft.depositAmount))}</div>
+    </div>
+  );
+}
+
+function SettingsPanel({
+  settings,
+  onChange,
+  onSave,
+  onApply,
+}: {
+  settings: ShopSettings;
+  onChange: (settings: ShopSettings) => void;
+  onSave: () => void;
+  onApply: () => void;
+}) {
+  function update<K extends keyof ShopSettings>(key: K, value: ShopSettings[K]) {
+    onChange({ ...settings, [key]: value });
+  }
+
+  return (
+    <div className="grid gap-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <Field label="Default board-foot cost">
+          <TextInput type="number" value={settings.defaultBoardFootCost} onChange={(event) => update("defaultBoardFootCost", numericValue(event.target.value))} />
+        </Field>
+        <Field label="Default waste percentage">
+          <TextInput type="number" value={settings.defaultWastePercentage} onChange={(event) => update("defaultWastePercentage", numericValue(event.target.value))} />
+        </Field>
+        <Field label="Default hardware cost">
+          <TextInput type="number" value={settings.defaultHardwareCost} onChange={(event) => update("defaultHardwareCost", numericValue(event.target.value))} />
+        </Field>
+        <Field label="Default hourly labor rate">
+          <TextInput type="number" value={settings.defaultHourlyLaborRate} onChange={(event) => update("defaultHourlyLaborRate", numericValue(event.target.value))} />
+        </Field>
+        <Field label="Default markup percentage">
+          <TextInput type="number" value={settings.defaultMarkupPercentage} onChange={(event) => update("defaultMarkupPercentage", numericValue(event.target.value))} />
+        </Field>
+        <Field label="Default wholesale discount">
+          <TextInput type="number" value={settings.defaultWholesaleDiscountPercentage} onChange={(event) => update("defaultWholesaleDiscountPercentage", numericValue(event.target.value))} />
+        </Field>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={onSave} className="h-12 rounded-md bg-moss px-4 text-lg font-bold text-white">
+          Save settings
+        </button>
+        <button type="button" onClick={onApply} className="h-12 rounded-md bg-bark px-4 text-lg font-bold text-white">
+          Apply to calculator
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function updateBatch<K extends keyof LumberBatch>(
+  index: number,
+  key: K,
+  value: LumberBatch[K],
+  setLumberBatches: Dispatch<SetStateAction<LumberBatch[]>>,
+) {
+  setLumberBatches((current) =>
+    current.map((batch, batchIndex) => batchIndex === index ? { ...batch, [key]: value } : batch),
+  );
+}
+
+function updateJob<K extends keyof Job>(
+  index: number,
+  key: K,
+  value: Job[K],
+  setJobs: Dispatch<SetStateAction<Job[]>>,
+) {
+  setJobs((current) =>
+    current.map((job, jobIndex) => jobIndex === index ? { ...job, [key]: value } : job),
+  );
+}
