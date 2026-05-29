@@ -391,9 +391,13 @@ export async function upsertQuote(quote: Quote) {
     return quote;
   }
 
+  const payload: Record<string, unknown> = isUuid(quote.id)
+    ? { id: quote.id, ...quoteToRow(quote) }
+    : quoteToRow(quote);
+
   const { data, error } = await supabase
     .from("quotes")
-    .upsert(isUuid(quote.id) ? { id: quote.id, ...quoteToRow(quote) } : quoteToRow(quote))
+    .upsert(payload)
     .select("*")
     .single();
 
@@ -431,9 +435,13 @@ export async function upsertJob(job: Job) {
     return job;
   }
 
+  const payload: Record<string, unknown> = isUuid(job.id)
+    ? { id: job.id, ...jobToRow(job) }
+    : jobToRow(job);
+
   const { data, error } = await supabase
     .from("jobs")
-    .upsert(isUuid(job.id) ? { id: job.id, ...jobToRow(job) } : jobToRow(job))
+    .upsert(payload)
     .select("*")
     .single();
 

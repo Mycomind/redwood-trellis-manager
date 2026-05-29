@@ -210,22 +210,26 @@ export default function Home() {
     let alive = true;
     const localData = loadLocalData();
 
-    if (localData) {
-      setProducts(localData.products.length > 0 ? localData.products : seedProducts);
-      setLumberBatches(localData.lumberBatches);
-      setQuotes(localData.quotes);
-      setJobs(localData.jobs);
-      setSettings(localData.settings ?? defaultSettings);
-      setDataStatus("Loaded saved browser data");
-    }
+    queueMicrotask(() => {
+      if (!alive) {
+        return;
+      }
 
-    setHydrated(true);
+      if (localData) {
+        setProducts(localData.products.length > 0 ? localData.products : seedProducts);
+        setLumberBatches(localData.lumberBatches);
+        setQuotes(localData.quotes);
+        setJobs(localData.jobs);
+        setSettings(localData.settings ?? defaultSettings);
+        setDataStatus("Loaded saved browser data");
+      }
+
+      setHydrated(true);
+    });
 
     if (!hasSupabaseConfig()) {
       return;
     }
-
-    setDataStatus("Loading Supabase data...");
 
     loadSupabaseData()
       .then((data) => {
@@ -250,6 +254,12 @@ export default function Home() {
           setDataStatus(`Supabase unavailable: ${error.message}`);
         }
       });
+
+    queueMicrotask(() => {
+      if (alive) {
+        setDataStatus("Loading Supabase data...");
+      }
+    });
 
     return () => {
       alive = false;
@@ -296,7 +306,7 @@ export default function Home() {
         return { product, profit, margin };
       })
       .sort((a, b) => b.margin - a.margin);
-  }, [currentBoardFootCost]);
+  }, [currentBoardFootCost, products]);
 
   const dashboard = {
     activeJobs: jobs.filter((job) => job.status !== "paid" && job.status !== "delivered").length,
