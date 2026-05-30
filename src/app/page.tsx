@@ -50,7 +50,6 @@ import {
   saveShopSettings,
   deleteJob,
   deleteQuote,
-  updateJobStatus,
   upsertLumberBatch,
   upsertJob,
   upsertProduct,
@@ -205,6 +204,29 @@ function validateBackup(value: unknown): {
 
 function isOpenJob(job: Job) {
   return job.status !== "paid" && job.status !== "delivered";
+}
+
+const jobStatuses: Job["status"][] = ["new", "quoted", "deposit paid", "building", "ready", "delivered", "paid"];
+
+function jobStatusClass(status: Job["status"]) {
+  if (status === "paid") return "bg-moss/15 text-moss";
+  if (status === "delivered" || status === "ready") return "bg-clay/15 text-clay";
+  if (status === "building" || status === "deposit paid") return "bg-bark/10 text-bark";
+  return "bg-redwood/15 text-redwood";
+}
+
+function jobProgress(status: Job["status"]) {
+  const index = Math.max(0, jobStatuses.indexOf(status));
+  return Math.round(((index + 1) / jobStatuses.length) * 100);
+}
+
+function nextJobStatus(status: Job["status"]) {
+  const index = jobStatuses.indexOf(status);
+  return jobStatuses[Math.min(jobStatuses.length - 1, index + 1)] ?? status;
+}
+
+function buildJobMessage(job: Job, product: Product) {
+  return `Job update for ${job.customerName}: your ${product.name} is currently marked "${job.status}". Target due date: ${job.dueDate}. Current balance owed: ${money(job.balanceOwed)}. Notes: ${job.notes || "No extra notes."}`;
 }
 
 function productCalculatorInput(product: Product, boardFootCost: number): CalculatorInput {
@@ -954,66 +976,18 @@ export default function Home() {
 
           {activeTab === "jobs" ? (
             <Section title="Job Tracker" description="Track shop work from new quote through deposit, build, delivery, and final payment.">
-              {jobs.length === 0 ? (
-                <EmptyState title="No jobs yet" message="Accepted quotes can be turned into jobs from the Quotes tab." />
-              ) : null}
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[850px] border-separate border-spacing-y-2 text-left">
-                  <thead className="text-sm uppercase text-barkSoft">
-                    <tr>
-                      <th className="px-3">Customer</th>
-                      <th className="px-3">Product</th>
-                      <th className="px-3">Status</th>
-                      <th className="px-3">Due</th>
-                      <th className="px-3">Balance</th>
-                      <th className="px-3">Notes</th>
-                      <th className="px-3">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {jobs.map((job, index) => (
-                      <tr key={job.id} className="bg-linen text-lg">
-                        <td className="rounded-l-md px-3 py-3 font-bold">
-                          <TextInput value={job.customerName} onChange={(event) => updateJob(index, "customerName", event.target.value, setJobs)} />
-                        </td>
-                        <td className="px-3 py-3">
-                          <SelectInput value={job.productId} onChange={(event) => updateJob(index, "productId", event.target.value, setJobs)}>
-                            {products.map((product) => <option value={product.id} key={product.id}>{product.dimensions} {product.stockType}</option>)}
-                          </SelectInput>
-                        </td>
-                        <td className="px-3 py-3">
-                          <SelectInput value={job.status} onChange={(event) => {
-                            const status = event.target.value as Job["status"];
-                            updateJob(index, "status", status, setJobs);
-                            updateJobStatus(job.id, status).catch((error: Error) => setDataStatus(`Save failed: ${error.message}`));
-                          }}>
-                            {["new", "quoted", "deposit paid", "building", "ready", "delivered", "paid"].map((status) => <option key={status}>{status}</option>)}
-                          </SelectInput>
-                        </td>
-                        <td className="px-3 py-3">
-                          <TextInput type="date" value={job.dueDate} onChange={(event) => updateJob(index, "dueDate", event.target.value, setJobs)} />
-                        </td>
-                        <td className="px-3 py-3 font-bold">
-                          <TextInput type="number" value={job.balanceOwed} onChange={(event) => updateJob(index, "balanceOwed", numericValue(event.target.value), setJobs)} />
-                        </td>
-                        <td className="px-3 py-3">
-                          <TextInput value={job.notes} onChange={(event) => updateJob(index, "notes", event.target.value, setJobs)} />
-                        </td>
-                        <td className="rounded-r-md px-3 py-3">
-                          <div className="flex gap-2">
-                            <button type="button" onClick={() => saveExistingJob(job, index)} className="rounded-md bg-moss p-3 text-white" aria-label="Save job">
-                              <Save className="h-5 w-5" />
-                            </button>
-                            <button type="button" onClick={() => removeJob(job)} className="rounded-md bg-redwood p-3 text-white" aria-label="Delete job">
-                              <Trash2 className="h-5 w-5" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <JobBoard
+                jobs={jobs}
+                products={products}
+                productById={productById}
+                onChange={(job, index) => {
+                  setJobs((current) =>
+                    current.map((item, itemIndex) => (itemIndex === index ? job : item)),
+                  );
+                }}
+                onSave={saveExistingJob}
+                onDelete={removeJob}
+              />
             </Section>
           ) : null}
 
@@ -1705,6 +1679,212 @@ function EditableQuote({
   );
 }
 
+
+function JobBoard({
+  jobs,
+  products,
+  productById,
+  onChange,
+  onSave,
+  onDelete,
+}: {
+  jobs: Job[];
+  products: Product[];
+  productById: (id: string) => Product;
+  onChange: (job: Job, index: number) => void;
+  onSave: (job: Job, index: number) => void;
+  onDelete: (job: Job) => void;
+}) {
+  const openJobs = jobs
+    .map((job, index) => ({ job, index }))
+    .filter(({ job }) => isOpenJob(job))
+    .map(({ job, index }) => ({ job, index, due: dueSignal(job.dueDate) }))
+    .sort((a, b) => a.job.dueDate.localeCompare(b.job.dueDate));
+
+  const completedJobs = jobs
+    .map((job, index) => ({ job, index }))
+    .filter(({ job }) => !isOpenJob(job))
+    .map(({ job, index }) => ({ job, index, due: dueSignal(job.dueDate) }));
+
+  const totalOpenBalance = openJobs.reduce((sum, item) => sum + item.job.balanceOwed, 0);
+  const overdueOrDueSoon = openJobs.filter((item) => item.due.tone === "bad" || item.due.tone === "warn").length;
+  const readyJobs = jobs.filter((job) => job.status === "ready").length;
+  const paidJobs = jobs.filter((job) => job.status === "paid").length;
+
+  if (jobs.length === 0) {
+    return <EmptyState title="No jobs yet" message="Accepted quotes can be turned into jobs from the Quotes tab." />;
+  }
+
+  return (
+    <div className="grid gap-5">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard label="Open balance" value={money(totalOpenBalance)} tone={totalOpenBalance > 0 ? "warn" : "good"} />
+        <MetricCard label="Due soon / overdue" value={String(overdueOrDueSoon)} tone={overdueOrDueSoon > 0 ? "warn" : "good"} />
+        <MetricCard label="Ready for delivery" value={String(readyJobs)} />
+        <MetricCard label="Paid jobs" value={String(paidJobs)} tone="good" />
+      </div>
+
+      <div className="grid gap-4">
+        <div className="rounded-lg border border-shop bg-white p-4">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h3 className="text-2xl font-bold text-bark">Active production board</h3>
+              <p className="text-base text-barkSoft">Sorted by due date. Use Advance to move each job through the shop.</p>
+            </div>
+            <div className="rounded-full bg-linen px-3 py-1 text-sm font-bold text-bark">{openJobs.length} open</div>
+          </div>
+          <div className="grid gap-3">
+            {openJobs.map(({ job, index, due }) => (
+              <EditableJob
+                key={job.id}
+                job={job}
+                index={index}
+                products={products}
+                due={due}
+                productById={productById}
+                onChange={onChange}
+                onSave={onSave}
+                onDelete={onDelete}
+              />
+            ))}
+            {openJobs.length === 0 ? <EmptyState title="No active jobs" message="Delivered and paid jobs are stored below." /> : null}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-shop bg-white p-4">
+          <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h3 className="text-2xl font-bold text-bark">Completed / closed jobs</h3>
+              <p className="text-base text-barkSoft">Delivered and paid work stays here for reference.</p>
+            </div>
+            <div className="rounded-full bg-linen px-3 py-1 text-sm font-bold text-bark">{completedJobs.length} closed</div>
+          </div>
+          <div className="grid gap-2">
+            {completedJobs.map(({ job, index, due }) => (
+              <EditableJob
+                key={job.id}
+                job={job}
+                index={index}
+                products={products}
+                due={due}
+                productById={productById}
+                onChange={onChange}
+                onSave={onSave}
+                onDelete={onDelete}
+              />
+            ))}
+            {completedJobs.length === 0 ? <EmptyState title="No closed jobs yet" message="Jobs move here when marked delivered or paid." /> : null}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditableJob({
+  job,
+  index,
+  products,
+  due,
+  productById,
+  onChange,
+  onSave,
+  onDelete,
+}: {
+  job: Job;
+  index: number;
+  products: Product[];
+  due: ReturnType<typeof dueSignal>;
+  productById: (id: string) => Product;
+  onChange: (job: Job, index: number) => void;
+  onSave: (job: Job, index: number) => void;
+  onDelete: (job: Job) => void;
+}) {
+  const [draft, setDraft] = useState(job);
+  const activeProduct = productById(draft.productId);
+  const progress = jobProgress(draft.status);
+  const statusClass = jobStatusClass(draft.status);
+  const copyText = buildJobMessage(draft, activeProduct);
+
+  function update<K extends keyof Job>(key: K, value: Job[K]) {
+    const nextJob = { ...draft, [key]: value };
+    setDraft(nextJob);
+    onChange(nextJob, index);
+  }
+
+  function save(nextJob = draft) {
+    setDraft(nextJob);
+    onChange(nextJob, index);
+    onSave(nextJob, index);
+  }
+
+  function advance() {
+    const nextStatus = nextJobStatus(draft.status);
+    const nextBalance = nextStatus === "paid" ? 0 : draft.balanceOwed;
+    const nextJob = { ...draft, status: nextStatus, balanceOwed: nextBalance };
+    save(nextJob);
+  }
+
+  return (
+    <div className="rounded-md border border-shop bg-linen p-4">
+      <div className="grid gap-4 xl:grid-cols-[1fr_1.2fr_0.8fr] xl:items-start">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="text-2xl font-bold text-bark">{draft.customerName}</h4>
+            <span className={`rounded-full px-3 py-1 text-xs font-bold ${statusClass}`}>{draft.status}</span>
+            <span className={`rounded-full px-3 py-1 text-xs font-bold ${dueBadgeClass(due.tone)}`}>{due.label}</span>
+          </div>
+          <div className="mt-2 text-base text-barkSoft">{activeProduct.name} · {activeProduct.dimensions} · {money(draft.balanceOwed)} owed</div>
+          <div className="mt-3 h-3 overflow-hidden rounded-full bg-white">
+            <div className="h-full rounded-full bg-moss" style={{ width: `${progress}%` }} />
+          </div>
+          <div className="mt-1 text-sm font-bold text-barkSoft">{progress}% through workflow</div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <Field label="Customer">
+            <TextInput value={draft.customerName} onChange={(event) => update("customerName", event.target.value)} />
+          </Field>
+          <Field label="Product">
+            <SelectInput value={draft.productId} onChange={(event) => update("productId", event.target.value)}>
+              {products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
+            </SelectInput>
+          </Field>
+          <Field label="Status">
+            <SelectInput value={draft.status} onChange={(event) => update("status", event.target.value as Job["status"])}>
+              {jobStatuses.map((status) => <option key={status}>{status}</option>)}
+            </SelectInput>
+          </Field>
+          <Field label="Due date">
+            <TextInput type="date" value={draft.dueDate} onChange={(event) => update("dueDate", event.target.value)} />
+          </Field>
+          <Field label="Balance owed">
+            <TextInput type="number" value={draft.balanceOwed} onChange={(event) => update("balanceOwed", numericValue(event.target.value))} />
+          </Field>
+          <Field label="Notes">
+            <TextInput value={draft.notes} onChange={(event) => update("notes", event.target.value)} />
+          </Field>
+        </div>
+
+        <div className="grid gap-2">
+          <button type="button" onClick={advance} className="h-11 rounded-md bg-bark px-4 text-base font-bold text-white hover:bg-bark/90">
+            Advance
+          </button>
+          <button type="button" onClick={() => navigator.clipboard.writeText(copyText)} className="h-11 rounded-md bg-clay px-4 text-base font-bold text-white hover:bg-clay/90">
+            Copy update
+          </button>
+          <button type="button" onClick={() => save()} className="h-11 rounded-md bg-moss px-4 text-base font-bold text-white hover:bg-moss/90">
+            Save
+          </button>
+          <button type="button" onClick={() => onDelete(draft)} className="h-11 rounded-md bg-redwood px-4 text-base font-bold text-white hover:bg-redwoodDark">
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SettingsPanel({
   settings,
   onChange,
@@ -1765,13 +1945,3 @@ function updateBatch<K extends keyof LumberBatch>(
   );
 }
 
-function updateJob<K extends keyof Job>(
-  index: number,
-  key: K,
-  value: Job[K],
-  setJobs: Dispatch<SetStateAction<Job[]>>,
-) {
-  setJobs((current) =>
-    current.map((job, jobIndex) => jobIndex === index ? { ...job, [key]: value } : job),
-  );
-}
