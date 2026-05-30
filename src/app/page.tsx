@@ -35,10 +35,8 @@ import {
 } from "@/lib/calculations";
 import { loadLocalData, saveLocalData } from "@/lib/local-storage";
 import {
-  jobs as seedJobs,
   lumberBatches as seedLumberBatches,
   products as seedProducts,
-  quotes as seedQuotes,
 } from "@/lib/seed";
 import {
   hasSupabaseConfig,
