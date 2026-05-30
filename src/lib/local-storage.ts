@@ -1,6 +1,6 @@
 import type { Job, LumberBatch, Product, Quote, ShopSettings } from "./types";
 
-const STORAGE_KEY = "redwood-trellis-manager-data-v1";
+const STORAGE_KEY = "redwood-trellis-manager-data-v2-clean";
 
 export type LocalAppData = {
   products: Product[];

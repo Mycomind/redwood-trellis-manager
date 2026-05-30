@@ -318,12 +318,12 @@ function buildCutSheetText(input: CalculatorInput, result: ReturnType<typeof cal
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
-  const [dataStatus, setDataStatus] = useState("Seeded local data");
+  const [dataStatus, setDataStatus] = useState("Ready for real shop data");
   const [products, setProducts] = useState<Product[]>(seedProducts);
   const [calculator, setCalculator] = useState<CalculatorInput>(defaultCalculator);
   const [lumberBatches, setLumberBatches] = useState<LumberBatch[]>(seedLumberBatches);
-  const [quotes, setQuotes] = useState<Quote[]>(seedQuotes);
-  const [jobs, setJobs] = useState<Job[]>(seedJobs);
+  const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [quoteDraft, setQuoteDraft] = useState<Quote>(defaultQuote);
   const [settings, setSettings] = useState<ShopSettings>(defaultSettings);
   const [remoteLoaded, setRemoteLoaded] = useState(false);
