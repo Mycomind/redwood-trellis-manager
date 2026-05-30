@@ -1,5 +1,26 @@
 # Redwood Trellis Manager
 
+A local-first trellis shop manager for quoting, product pricing, lumber tracking, job status, and backup/restore.
+
+## Fast commands
+
+npm install
+npm run dev
+
+npm run check
+
+## Important docs
+
+- docs/SHOP-SETUP-CHECKLIST.md
+- docs/REAL-DATA-NEEDED.md
+- docs/DEPLOYMENT.md
+
+## Data safety
+
+The app currently saves data in the browser. Use Settings to export backups after real shop work.
+
+# Redwood Trellis Manager
+
 Internal Next.js shop app for a small handcrafted redwood trellis business. It includes a trellis cost calculator, product database, lumber sourcing tracker, quote generator, job tracker, and dashboard.
 
 ## Tech Stack

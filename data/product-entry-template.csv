@@ -1,0 +1,3 @@
+name,widthFeet,heightFeet,stockType,thicknessInches,slatWidthInches,verticalSlatCount,horizontalSlatCount,diagonalBraceCount,estimatedLaborMinutes,retailPrice,wholesalePrice,active
+Standard Redwood Trellis 2 x 2,2,2,3/4 inch,0.75,1.25,3,4,1,30,32,23,true
+Premium Redwood Trellis 4 x 4,4,4,1 1/8 inch,1.125,1.5,5,6,2,75,188,135,true

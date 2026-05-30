@@ -7,7 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint src next.config.ts tailwind.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run build",
+    "clean": "rm -rf .next tsconfig.tsbuildinfo",
+    "fresh": "rm -rf node_modules .next tsconfig.tsbuildinfo && npm install"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
@@ -27,4 +30,4 @@
     "tailwindcss": "^3.4.15",
     "typescript": "^5.6.3"
   }
-}
+}\n
