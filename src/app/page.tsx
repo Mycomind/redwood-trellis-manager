@@ -872,7 +872,7 @@ export default function Home() {
           ) : null}
 
           {activeTab === "products" ? (
-            <Section title="Product Database" description="Seeded standard trellises with active status, dimensions, labor, and retail/wholesale pricing.">
+            <Section title="Product Database" description="Starter trellis catalog. Edit these sizes, prices, and labor assumptions to match the real shop.">
               <button type="button" onClick={addProduct} className="mb-4 h-12 rounded-md bg-redwood px-4 text-lg font-bold text-white hover:bg-redwoodDark">
                 Add product from calculator
               </button>

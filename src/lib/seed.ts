@@ -16,7 +16,7 @@ function product(
 
   return {
     id,
-    name: `${stockType} ${premium ? "Premium" : "Open Grid"} Trellis ${widthFeet}' x ${heightFeet}'`,
+    name: `${premium ? "Premium 1 1/8 in" : "Standard 3/4 in"} Redwood Trellis ${widthFeet}' x ${heightFeet}'`,
     dimensions: `${widthFeet}' x ${heightFeet}'`,
     stockType,
     thicknessInches,
@@ -55,83 +55,8 @@ export const products: Product[] = [
   product("pr-6x4", "1 1/8\"", 6, 4, 278),
 ];
 
-export const lumberBatches: LumberBatch[] = [
-  {
-    id: "batch-rough-redwood-1",
-    supplierName: "Humboldt Salvage Yard",
-    woodType: "Rough redwood",
-    unitCost: 4.85,
-    nominalBoardFeet: 180,
-    fuelTravelCost: 64,
-    estimatedUsablePercentage: 72,
-    actualUsableBoardFeet: 132,
-    notes: "Good color, several bowed boards culled.",
-  },
-  {
-    id: "batch-clear-redwood-1",
-    supplierName: "Local Mill",
-    woodType: "Clear redwood offcuts",
-    unitCost: 6.25,
-    nominalBoardFeet: 96,
-    fuelTravelCost: 22,
-    estimatedUsablePercentage: 86,
-    actualUsableBoardFeet: 84,
-    notes: "Best stock for premium trellises.",
-  },
-];
+export const lumberBatches: LumberBatch[] = [];
 
-export const quotes: Quote[] = [
-  {
-    id: "quote-1001",
-    customerName: "Maria Lopez",
-    phone: "(707) 555-0132",
-    email: "maria@example.com",
-    productId: "og-5x3",
-    quantity: 3,
-    customDimensions: "",
-    calculatedCost: 162,
-    quotedPrice: 276,
-    depositAmount: 100,
-    notes: "Pickup next week if accepted.",
-    validUntil: "2026-06-15",
-    status: "sent",
-  },
-  {
-    id: "quote-1002",
-    customerName: "Green Acres Nursery",
-    phone: "(707) 555-0198",
-    email: "orders@greenacres.example",
-    productId: "pr-6x4",
-    quantity: 4,
-    customDimensions: "",
-    calculatedCost: 584,
-    quotedPrice: 1112,
-    depositAmount: 300,
-    notes: "Wholesale repeat customer.",
-    validUntil: "2026-06-20",
-    status: "accepted",
-  },
-];
+export const quotes: Quote[] = [];
 
-export const jobs: Job[] = [
-  {
-    id: "job-2001",
-    customerName: "Green Acres Nursery",
-    productId: "pr-6x4",
-    quoteId: "quote-1002",
-    status: "deposit paid",
-    dueDate: "2026-06-12",
-    balanceOwed: 812,
-    notes: "Mill premium slats first.",
-  },
-  {
-    id: "job-2002",
-    customerName: "Maria Lopez",
-    productId: "og-5x3",
-    quoteId: "quote-1001",
-    status: "quoted",
-    dueDate: "2026-06-18",
-    balanceOwed: 276,
-    notes: "Waiting for confirmation.",
-  },
-];
+export const jobs: Job[] = [];
