@@ -1002,6 +1002,8 @@ export default function Home() {
                 }}
                 onSave={() => void saveSettings(settings)}
                 onApply={resetCalculatorFromSettings}
+                onExport={exportBackup}
+                onImport={importBackup}
               />
             </Section>
           ) : null}
@@ -1890,11 +1892,15 @@ function SettingsPanel({
   onChange,
   onSave,
   onApply,
+  onExport,
+  onImport,
 }: {
   settings: ShopSettings;
   onChange: (settings: ShopSettings) => void;
   onSave: () => void;
   onApply: () => void;
+  onExport: () => void;
+  onImport: (file: File) => void | Promise<void>;
 }) {
   function update<K extends keyof ShopSettings>(key: K, value: ShopSettings[K]) {
     onChange({ ...settings, [key]: value });
@@ -1923,12 +1929,19 @@ function SettingsPanel({
         </Field>
       </div>
       <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={onSave} className="h-12 rounded-md bg-moss px-4 text-lg font-bold text-white">
-          Save settings
+        <button type="button" onClick={onSave} className="inline-flex h-12 items-center gap-2 rounded-md bg-moss px-4 text-lg font-bold text-white">
+          <Save className="h-5 w-5" /> Save settings
         </button>
-        <button type="button" onClick={onApply} className="h-12 rounded-md bg-bark px-4 text-lg font-bold text-white">
-          Apply to calculator
+        <button type="button" onClick={onApply} className="inline-flex h-12 items-center gap-2 rounded-md bg-bark px-4 text-lg font-bold text-white">
+          <Calculator className="h-5 w-5" /> Apply to calculator
         </button>
+        <button type="button" onClick={onExport} className="inline-flex h-12 items-center gap-2 rounded-md bg-redwood px-4 text-lg font-bold text-white">
+          <Download className="h-5 w-5" /> Export backup
+        </button>
+        <label className="inline-flex h-12 cursor-pointer items-center gap-2 rounded-md bg-white px-4 text-lg font-bold text-bark ring-1 ring-shop">
+          <Upload className="h-5 w-5" /> Restore backup
+          <input type="file" accept="application/json,.json" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) void onImport(file); event.currentTarget.value = ""; }} className="sr-only" />
+        </label>
       </div>
     </div>
   );
