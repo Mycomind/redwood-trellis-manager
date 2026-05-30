@@ -5,3 +5,16 @@ node_modules
 .vercel
 dist
 coverage
+
+# Dependencies and build output
+node_modules
+.next
+dist
+build
+coverage
+
+# Local/env/cache files
+.env.local
+.env
+.DS_Store
+*.tsbuildinfo

@@ -2,6 +2,7 @@
 
 import {
   Calculator,
+  CalendarDays,
   ClipboardList,
   Copy,
   Database,
@@ -13,6 +14,7 @@ import {
   LayoutDashboard,
   Printer,
   Ruler,
+  Scissors,
   Settings,
   Trees,
   Upload,
@@ -29,6 +31,7 @@ import {
   landedCost,
   money,
   numberFormat,
+  usableBoardFeet,
 } from "@/lib/calculations";
 import { loadLocalData, saveLocalData } from "@/lib/local-storage";
 import {
@@ -147,6 +150,97 @@ function validateBackup(value: unknown): {
     settings: isRecord(value.settings) ? (value.settings as ShopSettings) : undefined,
   };
 }
+
+function isOpenJob(job: Job) {
+  return job.status !== "paid" && job.status !== "delivered";
+}
+
+function productCalculatorInput(product: Product, boardFootCost: number): CalculatorInput {
+  return {
+    ...defaultCalculator,
+    style: product.stockType === "3/4\"" ? "Open Grid" : "Custom",
+    stockType: product.stockType,
+    thicknessInches: product.thicknessInches,
+    slatWidthInches: product.slatWidthInches,
+    widthFeet: product.widthFeet,
+    heightFeet: product.heightFeet,
+    verticalSlats: product.verticalSlatCount,
+    horizontalSlats: product.horizontalSlatCount,
+    diagonalBraces: product.diagonalBraceCount,
+    laborMinutes: product.estimatedLaborMinutes,
+    boardFootCost,
+    markupPercentage: 0,
+  };
+}
+
+function daysUntil(dateString: string) {
+  if (!dateString) {
+    return null;
+  }
+
+  const due = new Date(`${dateString}T12:00:00`);
+  if (Number.isNaN(due.getTime())) {
+    return null;
+  }
+
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  return Math.ceil((due.getTime() - today.getTime()) / 86_400_000);
+}
+
+function dueSignal(dateString: string) {
+  const days = daysUntil(dateString);
+
+  if (days === null) {
+    return { label: "No due date", tone: "neutral" as const };
+  }
+  if (days < 0) {
+    return { label: `${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} overdue`, tone: "bad" as const };
+  }
+  if (days === 0) {
+    return { label: "Due today", tone: "bad" as const };
+  }
+  if (days <= 3) {
+    return { label: `Due in ${days} day${days === 1 ? "" : "s"}`, tone: "warn" as const };
+  }
+
+  return { label: `Due in ${days} days`, tone: "good" as const };
+}
+
+function dueBadgeClass(tone: ReturnType<typeof dueSignal>["tone"]) {
+  if (tone === "bad") {
+    return "bg-redwood text-white";
+  }
+  if (tone === "warn") {
+    return "bg-clay text-white";
+  }
+  if (tone === "good") {
+    return "bg-moss text-white";
+  }
+
+  return "bg-shop text-bark";
+}
+
+function cutRows(input: CalculatorInput) {
+  return [
+    { label: "Vertical slats", count: input.verticalSlats, lengthFeet: input.heightFeet },
+    { label: "Horizontal slats", count: input.horizontalSlats, lengthFeet: input.widthFeet },
+    {
+      label: "Diagonal braces",
+      count: input.diagonalBraces,
+      lengthFeet: Math.sqrt(input.widthFeet ** 2 + input.heightFeet ** 2),
+    },
+  ].filter((row) => row.count > 0);
+}
+
+function buildCutSheetText(input: CalculatorInput, result: ReturnType<typeof calculateTrellis>) {
+  const rows = cutRows(input)
+    .map((row) => `${row.label}: ${row.count} @ ${numberFormat(row.lengthFeet, 2)} ft each = ${numberFormat(row.count * row.lengthFeet, 2)} linear ft`)
+    .join("\n");
+
+  return `Redwood trellis cut sheet\n${input.widthFeet}' x ${input.heightFeet}' ${input.stockType} ${input.style}\n${rows}\nTotal linear feet: ${numberFormat(result.totalLinearFeet, 2)}\nWaste-adjusted board feet: ${numberFormat(result.wasteAdjustedBoardFeet, 2)}\nEstimated build cost: ${money(result.totalBuildCost)}\nSuggested retail: ${money(result.retailPrice)}`;
+}
+
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
@@ -309,7 +403,7 @@ export default function Home() {
   }, [currentBoardFootCost, products]);
 
   const dashboard = {
-    activeJobs: jobs.filter((job) => job.status !== "paid" && job.status !== "delivered").length,
+    activeJobs: jobs.filter(isOpenJob).length,
     quotesPending: quotes.filter((quote) => quote.status === "draft" || quote.status === "sent").length,
     totalQuotedValue: quotes.reduce((sum, quote) => sum + quote.quotedPrice, 0),
     expectedProfit: quotes.reduce((sum, quote) => sum + Math.max(0, quote.quotedPrice - quote.calculatedCost), 0),
@@ -624,6 +718,9 @@ export default function Home() {
               dashboard={dashboard}
               profitability={profitability}
               currentBoardFootCost={currentBoardFootCost}
+              jobs={jobs}
+              products={products}
+              lumberBatches={lumberBatches}
             />
           ) : null}
 
@@ -696,6 +793,7 @@ export default function Home() {
                     <MetricCard label="Hardware" value={money(result.hardwareCost)} />
                     <MetricCard label="Wholesale" value={money(result.wholesalePrice)} />
                   </div>
+                  <CutSheet input={calculator} result={result} />
                 </div>
               </div>
             </Section>
@@ -887,17 +985,116 @@ export default function Home() {
   );
 }
 
+function CutSheet({ input, result }: { input: CalculatorInput; result: ReturnType<typeof calculateTrellis> }) {
+  const rows = cutRows(input);
+  const copyText = () => navigator.clipboard.writeText(buildCutSheetText(input, result));
+
+  return (
+    <div className="rounded-lg border border-shop bg-linen p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 text-xl font-bold text-bark">
+            <Scissors className="h-5 w-5 text-redwood" /> Shop cut sheet
+          </div>
+          <p className="text-sm text-barkSoft">Fast material breakdown for the current calculator setup.</p>
+        </div>
+        <button type="button" onClick={copyText} className="rounded-md bg-bark px-3 py-2 text-sm font-bold text-white">
+          Copy
+        </button>
+      </div>
+      <div className="grid gap-2">
+        {rows.map((row) => (
+          <div key={row.label} className="grid grid-cols-[1fr_auto_auto] gap-3 rounded-md bg-white p-3 text-base">
+            <div className="font-bold">{row.label}</div>
+            <div>{row.count} × {numberFormat(row.lengthFeet, 2)} ft</div>
+            <div className="font-bold">{numberFormat(row.count * row.lengthFeet, 2)} ft</div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-barkSoft">
+        <div className="rounded-md bg-white p-3">Total linear feet: <strong className="text-bark">{numberFormat(result.totalLinearFeet, 2)}</strong></div>
+        <div className="rounded-md bg-white p-3">Waste-adjusted board feet: <strong className="text-bark">{numberFormat(result.wasteAdjustedBoardFeet, 2)}</strong></div>
+      </div>
+    </div>
+  );
+}
+
 function Dashboard({
   dashboard,
   profitability,
   currentBoardFootCost,
+  jobs,
+  products,
+  lumberBatches,
 }: {
   dashboard: { activeJobs: number; quotesPending: number; totalQuotedValue: number; expectedProfit: number };
   profitability: { product: Product; profit: number; margin: number }[];
   currentBoardFootCost: number;
+  jobs: Job[];
+  products: Product[];
+  lumberBatches: LumberBatch[];
 }) {
+  const productMap = new Map(products.map((product) => [product.id, product]));
+  const openJobPlans = jobs
+    .filter(isOpenJob)
+    .map((job) => {
+      const product = productMap.get(job.productId) ?? products[0] ?? seedProducts[0];
+      const estimate = calculateTrellis(productCalculatorInput(product, currentBoardFootCost));
+      return { job, product, estimate, due: dueSignal(job.dueDate) };
+    })
+    .sort((a, b) => (daysUntil(a.job.dueDate) ?? 9999) - (daysUntil(b.job.dueDate) ?? 9999));
+
+  const availableBoardFeet = lumberBatches.reduce((sum, batch) => sum + usableBoardFeet(batch), 0);
+  const committedBoardFeet = openJobPlans.reduce((sum, plan) => sum + plan.estimate.wasteAdjustedBoardFeet, 0);
+  const boardFootBuffer = availableBoardFeet - committedBoardFeet;
+  const openBalance = openJobPlans.reduce((sum, plan) => sum + plan.job.balanceOwed, 0);
+  const urgentJobs = openJobPlans.filter((plan) => plan.due.tone === "bad" || plan.due.tone === "warn").length;
+
   return (
     <div className="grid gap-5">
+      <section className="overflow-hidden rounded-lg border border-redwood/20 bg-bark text-linen shadow-soft">
+        <div className="grid gap-5 p-5 lg:grid-cols-[1.3fr_0.7fr] lg:p-6">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-sm font-bold uppercase tracking-wide text-shop">
+              <CalendarDays className="h-4 w-4" /> Shop command center
+            </div>
+            <h2 className="mt-4 text-4xl font-bold leading-tight lg:text-5xl">Know what to build, quote, buy, and collect next.</h2>
+            <p className="mt-3 max-w-3xl text-lg text-shop">
+              The dashboard now connects jobs, lumber, pricing, and balances so the app acts less like a spreadsheet and more like a daily production manager.
+            </p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-md bg-white/10 p-3">
+                <div className="text-sm text-shop">Urgent jobs</div>
+                <div className="text-3xl font-bold">{urgentJobs}</div>
+              </div>
+              <div className="rounded-md bg-white/10 p-3">
+                <div className="text-sm text-shop">Open balance</div>
+                <div className="text-3xl font-bold">{money(openBalance)}</div>
+              </div>
+              <div className="rounded-md bg-white/10 p-3">
+                <div className="text-sm text-shop">Lumber buffer</div>
+                <div className="text-3xl font-bold">{numberFormat(boardFootBuffer, 1)} bf</div>
+              </div>
+            </div>
+          </div>
+          <div className="rounded-lg border border-white/10 bg-white/10 p-4">
+            <h3 className="text-xl font-bold">Today&apos;s focus</h3>
+            <div className="mt-3 grid gap-2">
+              {openJobPlans.slice(0, 3).map(({ job, product, due }) => (
+                <div key={job.id} className="rounded-md bg-linen p-3 text-bark">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-bold">{job.customerName}</div>
+                    <span className={`rounded-full px-2 py-1 text-xs font-bold ${dueBadgeClass(due.tone)}`}>{due.label}</span>
+                  </div>
+                  <div className="mt-1 text-sm text-barkSoft">{product.name} · {job.status} · {money(job.balanceOwed)} owed</div>
+                </div>
+              ))}
+              {openJobPlans.length === 0 ? <div className="rounded-md bg-linen p-3 text-bark">No open jobs. Start from a quote or add a job.</div> : null}
+            </div>
+          </div>
+        </div>
+      </section>
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard label="Active jobs" value={String(dashboard.activeJobs)} tone="warn" />
         <MetricCard label="Quotes pending" value={String(dashboard.quotesPending)} />
@@ -905,6 +1102,48 @@ function Dashboard({
         <MetricCard label="Expected profit" value={money(dashboard.expectedProfit)} tone="good" />
         <MetricCard label="Board-foot cost" value={money(currentBoardFootCost)} />
       </div>
+
+      <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+        <Section title="Production Priority Queue" description="Open jobs sorted by due date with estimated lumber demand and remaining balance.">
+          <div className="grid gap-2">
+            {openJobPlans.slice(0, 6).map(({ job, product, estimate, due }) => (
+              <div key={job.id} className="grid gap-3 rounded-md bg-linen p-3 text-lg lg:grid-cols-[1.1fr_1fr_0.8fr_0.7fr] lg:items-center">
+                <div>
+                  <div className="font-bold text-bark">{job.customerName}</div>
+                  <div className="text-sm text-barkSoft">{product.name}</div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <span className={`rounded-full px-2 py-1 text-xs font-bold ${dueBadgeClass(due.tone)}`}>{due.label}</span>
+                  <span className="rounded-full bg-white px-2 py-1 text-xs font-bold text-bark">{job.status}</span>
+                </div>
+                <div>
+                  <div className="text-sm text-barkSoft">Build lumber</div>
+                  <div className="font-bold">{numberFormat(estimate.wasteAdjustedBoardFeet, 1)} bf</div>
+                </div>
+                <div>
+                  <div className="text-sm text-barkSoft">Balance</div>
+                  <div className="font-bold">{money(job.balanceOwed)}</div>
+                </div>
+              </div>
+            ))}
+            {openJobPlans.length === 0 ? <EmptyState title="No active production queue" message="Jobs marked delivered or paid are hidden from this queue." /> : null}
+          </div>
+        </Section>
+
+        <Section title="Lumber Runway" description="Compares usable board feet on hand against active job demand.">
+          <div className="grid gap-3">
+            <MetricCard label="Usable lumber on hand" value={`${numberFormat(availableBoardFeet, 1)} bf`} />
+            <MetricCard label="Committed to open jobs" value={`${numberFormat(committedBoardFeet, 1)} bf`} tone={committedBoardFeet > availableBoardFeet ? "warn" : "good"} />
+            <MetricCard label="Buffer after queue" value={`${numberFormat(boardFootBuffer, 1)} bf`} tone={boardFootBuffer < 0 ? "warn" : "good"} />
+            <div className="rounded-md bg-linen p-3 text-base text-barkSoft">
+              {boardFootBuffer < 0
+                ? `Buy or source about ${numberFormat(Math.abs(boardFootBuffer), 1)} more usable board feet before committing to the full queue.`
+                : `You have enough entered lumber for the active queue, with about ${numberFormat(boardFootBuffer, 1)} usable board feet left over.`}
+            </div>
+          </div>
+        </Section>
+      </div>
+
       <div className="grid gap-5 xl:grid-cols-2">
         <Section title="Most Profitable Sizes">
           <ProfitList items={profitability.slice(0, 5)} />
