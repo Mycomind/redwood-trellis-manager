@@ -118,6 +118,58 @@ function numericValue(value: string) {
   return Number(value) || 0;
 }
 
+function quoteFinancials(quote: Quote) {
+  const revenue = Math.max(0, quote.quotedPrice);
+  const cost = Math.max(0, quote.calculatedCost);
+  const deposit = Math.max(0, Math.min(quote.depositAmount, revenue));
+  const balance = Math.max(0, revenue - deposit);
+  const profit = revenue - cost;
+  const marginPercentage = revenue > 0 ? (profit / revenue) * 100 : 0;
+  const depositPercentage = revenue > 0 ? (deposit / revenue) * 100 : 0;
+
+  return { revenue, cost, deposit, balance, profit, marginPercentage, depositPercentage };
+}
+
+function suggestedDeposit(price: number) {
+  return Math.round(Math.max(0, price) * 0.5);
+}
+
+function quoteTone(marginPercentage: number) {
+  if (marginPercentage >= 45) {
+    return { label: "Strong margin", className: "bg-moss/15 text-moss" };
+  }
+
+  if (marginPercentage >= 30) {
+    return { label: "Usable margin", className: "bg-clay/15 text-clay" };
+  }
+
+  return { label: "Profit warning", className: "bg-redwood/15 text-redwood" };
+}
+
+function quoteStatusClass(status: Quote["status"]) {
+  if (status === "accepted") {
+    return "bg-moss/15 text-moss";
+  }
+
+  if (status === "sent") {
+    return "bg-clay/15 text-clay";
+  }
+
+  if (status === "declined") {
+    return "bg-redwood/15 text-redwood";
+  }
+
+  return "bg-white text-bark";
+}
+
+function buildQuoteMessage(quote: Quote, product: Product) {
+  const financials = quoteFinancials(quote);
+  const dimensionText = quote.customDimensions ? ` Custom dimensions: ${quote.customDimensions}.` : "";
+  const noteText = quote.notes ? ` Notes: ${quote.notes}` : "";
+
+  return `Hi ${quote.customerName}, your redwood trellis quote is ${money(financials.revenue)} for ${quote.quantity} × ${product.name}.${dimensionText} Deposit to start: ${money(financials.deposit)}. Balance on completion: ${money(financials.balance)}. Quote valid until ${quote.validUntil}.${noteText}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -648,7 +700,7 @@ export default function Home() {
   }
 
   const quoteProduct = productById(quoteDraft.productId);
-  const textMessageQuote = `${quoteDraft.customerName}, your quote for ${quoteDraft.quantity} ${quoteProduct.name}${quoteDraft.customDimensions ? ` (${quoteDraft.customDimensions})` : ""} is ${money(quoteDraft.quotedPrice)}. Deposit: ${money(quoteDraft.depositAmount)}. Valid until ${quoteDraft.validUntil}. ${quoteDraft.notes}`;
+  const textMessageQuote = buildQuoteMessage(quoteDraft, quoteProduct);
 
   return (
     <main className="min-h-screen">
@@ -1291,13 +1343,48 @@ function QuoteEditor({
   productById: (id: string) => Product;
 }) {
   const product = productById(quote.productId);
+  const financials = quoteFinancials(quote);
+  const tone = quoteTone(financials.marginPercentage);
+  const productRetail = product.retailPrice * quote.quantity;
+  const productWholesale = product.wholesalePrice * quote.quantity;
+  const floorPrice = Math.ceil(financials.cost * 1.45);
 
   function update<K extends keyof Quote>(key: K, value: Quote[K]) {
     setQuote((current) => ({ ...current, [key]: value }));
   }
 
+  function applyProductPrice() {
+    setQuote((current) => ({
+      ...current,
+      calculatedCost: product.wholesalePrice * current.quantity,
+      quotedPrice: product.retailPrice * current.quantity,
+      depositAmount: suggestedDeposit(product.retailPrice * current.quantity),
+    }));
+  }
+
   return (
-    <div className="grid gap-3 rounded-lg bg-linen p-4">
+    <div className="grid gap-4 rounded-lg bg-linen p-4">
+      <div className="rounded-md border border-shop bg-white p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-2xl font-bold text-bark">Quote builder</h3>
+            <p className="text-base text-barkSoft">Price the job, collect a real deposit, and keep the balance visible before it becomes a shop job.</p>
+          </div>
+          <span className={`rounded-full px-3 py-1 text-sm font-bold ${tone.className}`}>{tone.label}</span>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard label="Customer price" value={money(financials.revenue)} tone="good" />
+          <MetricCard label="Gross profit" value={money(financials.profit)} tone={financials.profit >= 0 ? "good" : "warn"} help={`${numberFormat(financials.marginPercentage, 1)}% margin`} />
+          <MetricCard label="Deposit" value={money(financials.deposit)} help={`${numberFormat(financials.depositPercentage, 0)}% collected`} />
+          <MetricCard label="Balance" value={money(financials.balance)} />
+        </div>
+        {financials.marginPercentage < 30 ? (
+          <div className="mt-3 rounded-md border border-redwood/30 bg-redwood/10 p-3 text-base font-bold text-redwood">
+            Raise this quote toward at least {money(floorPrice)} or reduce labor/material cost before sending.
+          </div>
+        ) : null}
+      </div>
+
       <div className="grid gap-3 md:grid-cols-2">
         <Field label="Customer name"><TextInput value={quote.customerName} onChange={(event) => update("customerName", event.target.value)} /></Field>
         <Field label="Phone"><TextInput value={quote.phone} onChange={(event) => update("phone", event.target.value)} /></Field>
@@ -1307,12 +1394,16 @@ function QuoteEditor({
             value={quote.productId}
             onChange={(event) => {
               const nextProduct = productById(event.target.value);
-              setQuote((current) => ({
-                ...current,
-                productId: nextProduct.id,
-                calculatedCost: nextProduct.wholesalePrice * current.quantity,
-                quotedPrice: nextProduct.retailPrice * current.quantity,
-              }));
+              setQuote((current) => {
+                const nextPrice = nextProduct.retailPrice * current.quantity;
+                return {
+                  ...current,
+                  productId: nextProduct.id,
+                  calculatedCost: nextProduct.wholesalePrice * current.quantity,
+                  quotedPrice: nextPrice,
+                  depositAmount: suggestedDeposit(nextPrice),
+                };
+              });
             }}
           >
             {products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}
@@ -1320,11 +1411,13 @@ function QuoteEditor({
         </Field>
         <Field label="Quantity"><TextInput type="number" value={quote.quantity} onChange={(event) => {
           const quantity = numericValue(event.target.value);
+          const nextPrice = product.retailPrice * quantity;
           setQuote((current) => ({
             ...current,
             quantity,
             calculatedCost: product.wholesalePrice * quantity,
-            quotedPrice: product.retailPrice * quantity,
+            quotedPrice: nextPrice,
+            depositAmount: suggestedDeposit(nextPrice),
           }));
         }} /></Field>
         <Field label="Custom dimensions"><TextInput value={quote.customDimensions} onChange={(event) => update("customDimensions", event.target.value)} /></Field>
@@ -1341,10 +1434,25 @@ function QuoteEditor({
           </SelectInput>
         </Field>
       </div>
+
+      <div className="grid gap-2 rounded-md border border-shop bg-white p-3 text-base text-barkSoft md:grid-cols-3">
+        <div><strong className="text-bark">Catalog retail:</strong> {money(productRetail)}</div>
+        <div><strong className="text-bark">Catalog wholesale:</strong> {money(productWholesale)}</div>
+        <div><strong className="text-bark">Suggested deposit:</strong> {money(suggestedDeposit(quote.quotedPrice))}</div>
+      </div>
+
       <textarea value={quote.notes} onChange={(event) => update("notes", event.target.value)} className="min-h-24 rounded-md border border-shop bg-white p-3 text-lg text-bark outline-none focus:border-redwood" />
-      <button type="button" onClick={addQuote} className="h-12 rounded-md bg-redwood px-4 text-lg font-bold text-white hover:bg-redwoodDark">
-        Save quote
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={applyProductPrice} className="h-12 rounded-md bg-bark px-4 text-lg font-bold text-white hover:bg-bark/90">
+          Reset to catalog price
+        </button>
+        <button type="button" onClick={() => update("depositAmount", suggestedDeposit(quote.quotedPrice))} className="h-12 rounded-md bg-clay px-4 text-lg font-bold text-white hover:bg-clay/90">
+          Set 50% deposit
+        </button>
+        <button type="button" onClick={addQuote} className="h-12 rounded-md bg-redwood px-4 text-lg font-bold text-white hover:bg-redwoodDark">
+          Save quote
+        </button>
+      </div>
     </div>
   );
 }
@@ -1358,6 +1466,8 @@ function PrintableQuote({
   product: Product;
   textMessageQuote: string;
 }) {
+  const financials = quoteFinancials(quote);
+
   return (
     <div className="rounded-lg border border-shop bg-white p-5">
       <div className="mb-3 flex flex-wrap gap-2 no-print">
@@ -1369,17 +1479,48 @@ function PrintableQuote({
         </button>
       </div>
       <div className="print-quote rounded-md border border-shop p-5">
-        <h3 className="text-3xl font-bold text-bark">Redwood Trellis Quote</h3>
-        <p className="mt-1 text-lg text-barkSoft">Prepared for {quote.customerName}</p>
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-shop pb-4">
+          <div>
+            <h3 className="text-3xl font-bold text-bark">Redwood Trellis Quote</h3>
+            <p className="mt-1 text-lg text-barkSoft">Prepared for {quote.customerName}</p>
+          </div>
+          <div className="text-right text-base text-barkSoft">
+            <div className="font-bold text-bark">Dennis Ellis Trellis</div>
+            <div>Handcrafted redwood trellises</div>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-4 md:grid-cols-2">
+          <div className="rounded-md bg-linen p-4">
+            <h4 className="text-lg font-bold text-bark">Customer</h4>
+            <div className="mt-2 grid gap-1 text-base text-barkSoft">
+              <div>{quote.customerName}</div>
+              <div>{quote.phone}</div>
+              <div>{quote.email}</div>
+            </div>
+          </div>
+          <div className="rounded-md bg-linen p-4">
+            <h4 className="text-lg font-bold text-bark">Quote terms</h4>
+            <div className="mt-2 grid gap-1 text-base text-barkSoft">
+              <div>Quote status: {quote.status}</div>
+              <div>Valid until: {quote.validUntil}</div>
+              <div>Deposit required to start: {money(financials.deposit)}</div>
+            </div>
+          </div>
+        </div>
+
         <div className="mt-5 grid gap-2 text-lg">
           <div><strong>Product:</strong> {product.name}</div>
           <div><strong>Quantity:</strong> {quote.quantity}</div>
           {quote.customDimensions ? <div><strong>Custom dimensions:</strong> {quote.customDimensions}</div> : null}
-          <div><strong>Quoted price:</strong> {money(quote.quotedPrice)}</div>
-          <div><strong>Deposit:</strong> {money(quote.depositAmount)}</div>
-          <div><strong>Balance:</strong> {money(Math.max(0, quote.quotedPrice - quote.depositAmount))}</div>
-          <div><strong>Valid until:</strong> {quote.validUntil}</div>
+          <div><strong>Quoted price:</strong> {money(financials.revenue)}</div>
+          <div><strong>Deposit:</strong> {money(financials.deposit)}</div>
+          <div><strong>Balance due on completion:</strong> {money(financials.balance)}</div>
           <div><strong>Notes:</strong> {quote.notes}</div>
+        </div>
+
+        <div className="mt-5 rounded-md border border-shop bg-linen p-4 text-base text-barkSoft">
+          <strong className="text-bark">Next step:</strong> Approve the quote and pay the deposit so materials can be allocated and the build can be placed on the production schedule.
         </div>
       </div>
       <div className="mt-3 rounded-md bg-linen p-3 text-base text-bark no-print">{textMessageQuote}</div>
@@ -1443,6 +1584,10 @@ function EditableQuote({
   onSave: (quote: Quote) => void;
 }) {
   const [draft, setDraft] = useState(quote);
+  const product = productById(draft.productId);
+  const financials = quoteFinancials(draft);
+  const marginTone = quoteTone(financials.marginPercentage);
+  const copyText = buildQuoteMessage(draft, product);
 
   function update<K extends keyof Quote>(key: K, value: Quote[K]) {
     const nextQuote = { ...draft, [key]: value };
@@ -1451,19 +1596,32 @@ function EditableQuote({
   }
 
   function updateProduct(productId: string) {
-    const product = productById(productId);
+    const nextProduct = productById(productId);
+    const nextPrice = nextProduct.retailPrice * draft.quantity;
     const nextQuote = {
       ...draft,
       productId,
-      calculatedCost: product.wholesalePrice * draft.quantity,
-      quotedPrice: product.retailPrice * draft.quantity,
+      calculatedCost: nextProduct.wholesalePrice * draft.quantity,
+      quotedPrice: nextPrice,
+      depositAmount: suggestedDeposit(nextPrice),
     };
     setDraft(nextQuote);
     onChange(nextQuote);
   }
 
   return (
-    <div className="rounded-md bg-linen p-3 text-lg">
+    <div className="rounded-md border border-shop bg-linen p-3 text-lg">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-xl font-bold text-bark">{draft.customerName}</div>
+          <div className="text-sm text-barkSoft">{product.name} · {money(financials.revenue)} quote · {money(financials.balance)} balance</div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <span className={`rounded-full px-3 py-1 text-xs font-bold ${quoteStatusClass(draft.status)}`}>{draft.status}</span>
+          <span className={`rounded-full px-3 py-1 text-xs font-bold ${marginTone.className}`}>{numberFormat(financials.marginPercentage, 1)}% margin</span>
+        </div>
+      </div>
+
       <div className="grid gap-3 lg:grid-cols-[1.2fr_1.4fr_0.7fr_0.8fr_0.8fr_0.8fr]">
         <Field label="Customer">
           <TextInput value={draft.customerName} onChange={(event) => update("customerName", event.target.value)} />
@@ -1479,12 +1637,13 @@ function EditableQuote({
             value={draft.quantity}
             onChange={(event) => {
               const quantity = numericValue(event.target.value);
-              const product = productById(draft.productId);
+              const nextPrice = product.retailPrice * quantity;
               const nextQuote = {
                 ...draft,
                 quantity,
                 calculatedCost: product.wholesalePrice * quantity,
-                quotedPrice: product.retailPrice * quantity,
+                quotedPrice: nextPrice,
+                depositAmount: suggestedDeposit(nextPrice),
               };
               setDraft(nextQuote);
               onChange(nextQuote);
@@ -1506,6 +1665,7 @@ function EditableQuote({
           </SelectInput>
         </Field>
       </div>
+
       <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_1fr_1fr_1.5fr_auto] lg:items-end">
         <Field label="Phone">
           <TextInput value={draft.phone} onChange={(event) => update("phone", event.target.value)} />
@@ -1520,6 +1680,9 @@ function EditableQuote({
           <TextInput value={draft.notes} onChange={(event) => update("notes", event.target.value)} />
         </Field>
         <div className="flex gap-2">
+          <button type="button" onClick={() => navigator.clipboard.writeText(copyText)} className="rounded-md bg-clay p-3 text-white" aria-label="Copy quote text">
+            <Copy className="h-5 w-5" />
+          </button>
           <button type="button" onClick={() => onSave(draft)} className="rounded-md bg-moss p-3 text-white" aria-label="Save quote">
             <Save className="h-5 w-5" />
           </button>
@@ -1531,7 +1694,13 @@ function EditableQuote({
           </button>
         </div>
       </div>
-      <div className="mt-2 text-base text-barkSoft">Balance after deposit: {money(Math.max(0, draft.quotedPrice - draft.depositAmount))}</div>
+
+      <div className="mt-3 grid gap-2 rounded-md bg-white p-3 text-base text-barkSoft sm:grid-cols-4">
+        <div><strong className="text-bark">Cost:</strong> {money(financials.cost)}</div>
+        <div><strong className="text-bark">Profit:</strong> {money(financials.profit)}</div>
+        <div><strong className="text-bark">Deposit:</strong> {numberFormat(financials.depositPercentage, 0)}%</div>
+        <div><strong className="text-bark">Balance:</strong> {money(financials.balance)}</div>
+      </div>
     </div>
   );
 }
